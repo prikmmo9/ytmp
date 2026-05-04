@@ -13,9 +13,11 @@ from logger_config import create_logger
 # ============================================================
 # КОНФИГУРАЦИЯ
 # ============================================================
-BOT_TOKEN=8566350925:AAEOwpPgXhmR3SE_7TapSbzMJnqImnMA-Js
-API_ID=22268845
-API_HASH=ffbeffdfb86784e12b39aea5f53857d2
+
+
+API_ID = int(os.getenv('API_ID', '22268845'))
+API_HASH = os.getenv('API_HASH', 'ffbeffdfb86784e12b39aea5f53857d2')
+BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8566350925:AAEOwpPgXhmR3SE_7TapSbzMJnqImnMA-Js')
 
 DOWNLOAD_FOLDER = 'downloads'
 MAX_FILE_SIZE_MB = 2000
