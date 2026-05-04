@@ -13,7 +13,7 @@ from logger_config import create_logger
 # ============================================================
 # КОНФИГУРАЦИЯ
 # ============================================================
-ADMIN_TOKEN = os.getenv('ADMIN_TOKEN', '000')
+BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', 'your_bot_token_here')
 API_ID = int(os.getenv('API_ID', '1234567'))
 API_HASH = os.getenv('API_HASH', 'your_api_hash_here')
 
