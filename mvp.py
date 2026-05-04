@@ -122,24 +122,11 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
             # Для YouTube: готовый mp4 формат 18 (360p с аудио)
             'format': '18/best[height<=360][ext=mp4]/best[height<=480][ext=mp4]/best[ext=mp4]/best',
             'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
-            # Включаем скачивание и вшивание превью
+            # Скачиваем превью как отдельный файл
             'writethumbnail': True,
-            'postprocessors': [
-                {
-                    'key': 'FFmpegVideoConvertor',
-                    'preferedformat': 'mp4',
-                },
-                {
-                    'key': 'EmbedThumbnail',
-                    'already_have_thumbnail': False,
-                },
-                {
-                    'key': 'FFmpegMetadata',
-                    'add_metadata': True,
-                }
-            ],
-            'prefer_ffmpeg': True,
-            'merge_output_format': 'mp4',
+            'postprocessors': [],
+            'prefer_ffmpeg': False,
+            'merge_output_format': None,
         }
     elif platform == 'tiktok':
         ydl_opts = {
@@ -147,24 +134,11 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
             # Для TikTok: лучшее качество, обычно mp4
             'format': 'best[ext=mp4]/best',
             'outtmpl': f'{DOWNLOAD_FOLDER}/%(uploader)s_%(title).100s_%(id)s.%(ext)s',
-            # Включаем скачивание и вшивание превью
+            # Скачиваем превью как отдельный файл
             'writethumbnail': True,
-            'postprocessors': [
-                {
-                    'key': 'FFmpegVideoConvertor',
-                    'preferedformat': 'mp4',
-                },
-                {
-                    'key': 'EmbedThumbnail',
-                    'already_have_thumbnail': False,
-                },
-                {
-                    'key': 'FFmpegMetadata',
-                    'add_metadata': True,
-                }
-            ],
-            'prefer_ffmpeg': True,
-            'merge_output_format': 'mp4',
+            'postprocessors': [],
+            'prefer_ffmpeg': False,
+            'merge_output_format': None,
             # Специфичные для TikTok
             'extractor_args': {
                 'tiktok': {
@@ -177,7 +151,7 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
         return None
     
     # Шаг 1: Получение информации
-    console_logger.step(f"Получение информации о видео ({platform})...", current=1, total=4)
+    console_logger.step(f"Получение информации о видео ({platform})...", current=1, total=3)
     
     if cancel_event.is_set():
         logger.info("🛑 Загрузка отменена (шаг 1)")
@@ -190,7 +164,7 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
             'skip_download': True,
             'no_check_formats': True,
             'playlistend': 1,
-            'writethumbnail': False,  # Не скачиваем превью на этапе информации
+            'writethumbnail': False,
         }
         
         info_start = time.time()
@@ -227,7 +201,7 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
             logger.info(f"💬 Комментариев: {info.get('comment_count', 'N/A')}")
         
         # Шаг 2: Скачивание видео и превью
-        console_logger.step("Скачивание видео и превью...", current=2, total=4)
+        console_logger.step("Скачивание видео и превью...", current=2, total=3)
         
         if cancel_event.is_set():
             logger.info("🛑 Загрузка отменена (перед скачиванием)")
@@ -252,9 +226,6 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
                     if str(e) == "DOWNLOAD_CANCELLED":
                         raise
                     pass
-            
-            elif d['status'] == 'finished':
-                logger.info(f"✅ Скачивание завершено: {d.get('filename', '')}")
         
         ydl_opts['progress_hooks'] = [progress_hook]
         
@@ -274,21 +245,20 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
             file_path = ydl.prepare_filename(info)
             if os.path.exists(file_path):
                 os.remove(file_path)
+            # Удаляем и превью если есть
+            base_path = os.path.splitext(file_path)[0]
+            for ext in ['.jpg', '.jpeg', '.png', '.webp']:
+                thumb = base_path + ext
+                if os.path.exists(thumb):
+                    os.remove(thumb)
             return None
         
-        # Шаг 3: Вшивание превью
-        console_logger.step("Вшивание превью в видео...", current=3, total=4)
+        # Шаг 3: Проверка файлов
+        console_logger.step("Проверка файлов...", current=3, total=3)
         
-        if cancel_event.is_set():
-            logger.info("🛑 Загрузка отменена (перед вшиванием превью)")
-            return None
-        
-        embed_start = time.time()
-        
-        # Получаем путь к файлу (после постобработки yt-dlp)
         file_path = ydl.prepare_filename(info)
         
-        # Ищем файл если расширение не совпало
+        # Ищем видео файл если расширение не совпало
         if not os.path.exists(file_path):
             base = os.path.splitext(file_path)[0]
             for ext in ['.mp4', '.webm', '.mkv', '.mov', '.flv']:
@@ -301,28 +271,42 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
                 pattern = f"{DOWNLOAD_FOLDER}/*{info.get('id', '')}*"
                 possible = glob.glob(pattern)
                 if possible:
-                    # Исключаем файлы превью
+                    # Ищем видео файл (не превью)
                     video_files = [f for f in possible if not f.endswith(('.jpg', '.jpeg', '.png', '.webp'))]
                     if video_files:
                         file_path = video_files[0]
                     else:
                         file_path = possible[0]
+                else:
+                    logger.error(f"Файл не найден: {file_path}")
+                    return None
         
-        embed_time = time.time() - embed_start
-        logger.info(f"⏱ Вшивание превью заняло: {embed_time:.1f}с")
-        logger.info("✅ Превью успешно вшито в видео")
+        # Ищем файл превью
+        thumbnail_path = None
+        # yt-dlp сохраняет превью с тем же именем но с расширением jpg/webp
+        base_path = os.path.splitext(file_path)[0]
+        for ext in ['.jpg', '.jpeg', '.png', '.webp']:
+            potential_thumb = base_path + ext
+            if os.path.exists(potential_thumb):
+                thumbnail_path = potential_thumb
+                break
         
-        # Шаг 4: Проверка файла
-        console_logger.step("Проверка файла...", current=4, total=4)
-        
-        if not os.path.exists(file_path):
-            logger.error(f"Файл не найден: {file_path}")
-            return None
+        # Если превью не найдено, ищем в папке по ID
+        if not thumbnail_path:
+            import glob
+            thumb_pattern = f"{DOWNLOAD_FOLDER}/*{info.get('id', '')}*.jpg"
+            possible_thumbs = glob.glob(thumb_pattern)
+            if possible_thumbs:
+                thumbnail_path = possible_thumbs[0]
         
         file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
         
-        logger.info(f"📁 Файл: {os.path.basename(file_path)} | Размер: {file_size_mb:.1f} MB")
-        logger.info("🖼 Превью вшито в начало видео")
+        logger.info(f"📁 Видео: {os.path.basename(file_path)} | Размер: {file_size_mb:.1f} MB")
+        if thumbnail_path:
+            thumb_size = os.path.getsize(thumbnail_path) / 1024
+            logger.info(f"🖼 Превью: {os.path.basename(thumbnail_path)} ({thumb_size:.1f} KB)")
+        else:
+            logger.warning("⚠️ Превью не найдено")
         
         # Для TikTok duration может быть float
         duration = info.get('duration', 0)
@@ -334,6 +318,7 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
             'uploader': info.get('uploader') or 'Неизвестный автор',
             'duration': duration,
             'file_path': file_path,
+            'thumbnail_path': thumbnail_path,
             'file_size_mb': file_size_mb,
             'url': url,
             'platform': platform,
@@ -375,7 +360,7 @@ async def start_handler(event):
         "**Что я умею:**\n"
         "• Скачиваю видео с **YouTube** в качестве 360p\n"
         "• Скачиваю видео с **TikTok** в лучшем качестве\n"
-        "• 🖼 **Вшиваю превью в начало видео**\n\n"
+        "• 🖼 **Добавляю превью к видео в Telegram**\n\n"
         "**Как использовать:**\n"
         "Просто отправь мне ссылку на видео!\n\n"
         "**Поддерживаемые платформы:**\n"
@@ -409,13 +394,12 @@ async def help_handler(event):
         "2️⃣ Бот определит платформу автоматически\n"
         "3️⃣ Проверит видео и покажет информацию\n"
         "4️⃣ Скачает видео и превью\n"
-        "5️⃣ Вопьет превью в начало видео\n"
-        "6️⃣ Отправит готовое видео вам\n\n"
+        "5️⃣ Отправит видео с превью в Telegram\n\n"
         "⚠️ **Важно:**\n"
         "• Загружается только одно видео за раз\n"
         "• Дождитесь окончания текущей загрузки\n"
         "• Не отправляйте новую ссылку пока идет загрузка\n"
-        "• Требуется FFmpeg для вшивания превью\n\n"
+        "• Превью добавляется без изменения видео\n\n"
         "**Команды:**\n"
         "/start - Главное меню\n"
         "/help - Эта справка\n"
@@ -485,7 +469,7 @@ async def message_handler(event):
         f"{platform_emoji} **Начинаю загрузку видео...**\n"
         f"🌐 Платформа: **{platform_name}**\n"
         "🔍 Проверяю доступность...\n"
-        "🖼 Будет вшито превью\n"
+        "🖼 Скачаю превью для видео\n"
         "⏳ Пожалуйста, подождите... (отмена: /cancel)"
     )
     
@@ -525,6 +509,7 @@ async def message_handler(event):
             return
         
         file_path = video_info['file_path']
+        thumbnail_path = video_info.get('thumbnail_path')
         file_size_mb = video_info['file_size_mb']
         
         if file_size_mb > MAX_FILE_SIZE_MB:
@@ -535,11 +520,13 @@ async def message_handler(event):
             )
             if os.path.exists(file_path):
                 os.remove(file_path)
+            if thumbnail_path and os.path.exists(thumbnail_path):
+                os.remove(thumbnail_path)
             return
         
         await status_msg.edit(
             f"✅ **Видео скачано!** ({file_size_mb:.1f} MB)\n"
-            f"🖼 Превью вшито\n"
+            f"{'🖼 Превью готово' if thumbnail_path else '⚠️ Без превью'}\n"
             f"📤 Отправляю вам файл..."
         )
         
@@ -566,7 +553,7 @@ async def message_handler(event):
                 f"⏱ **Длительность:** {duration_str}\n"
                 f"💾 **Размер:** {file_size_mb:.1f} MB\n"
                 f"📊 **Качество:** 360p\n"
-                f"🖼 **Превью:** вшито\n"
+                f"🖼 **Превью:** {'есть' if thumbnail_path else 'нет'}\n"
                 f"🔗 {video_info['url']}"
             )
         else:  # TikTok
@@ -576,17 +563,18 @@ async def message_handler(event):
                 f"⏱ **Длительность:** {duration_str}\n"
                 f"💾 **Размер:** {file_size_mb:.1f} MB\n"
                 f"🌐 **Платформа:** TikTok\n"
-                f"🖼 **Превью:** вшито\n"
+                f"🖼 **Превью:** {'есть' if thumbnail_path else 'нет'}\n"
                 f"🔗 {video_info['url']}"
             )
         
-        # Отправляем файл
+        # Отправляем файл с превью (отдельный файл, не вшитый в видео)
         await client.send_file(
             entity=chat_id,
             file=file_path,
             caption=caption,
             supports_streaming=True,
-            thumb=None  # Превью уже вшито в видео
+            thumb=thumbnail_path,  # Превью как отдельный файл
+            video_note=False
         )
         
         upload_time = (datetime.now() - start_time).total_seconds()
@@ -600,16 +588,17 @@ async def message_handler(event):
             f"Платформа: {platform_name} | "
             f"Размер: {file_size_mb:.1f}MB | "
             f"Время: {upload_time:.1f}s | "
-            f"Превью: вшито"
+            f"Превью: {'есть' if thumbnail_path else 'нет'}"
         )
         
+        # Очистка временных файлов
         try:
             if os.path.exists(file_path):
                 os.remove(file_path)
-            # Удаляем также файл превью если остался
-            thumbnail_path = os.path.splitext(file_path)[0] + '.jpg'
-            if os.path.exists(thumbnail_path):
+                logger.debug(f"Удален файл: {file_path}")
+            if thumbnail_path and os.path.exists(thumbnail_path):
                 os.remove(thumbnail_path)
+                logger.debug(f"Удалено превью: {thumbnail_path}")
         except Exception as e:
             logger.warning(f"Не удалось удалить файлы: {e}")
         
@@ -664,20 +653,11 @@ async def main():
     logger.info(f"📁 Папка загрузок: {os.path.abspath(DOWNLOAD_FOLDER)}")
     logger.info(f"📺 YouTube: 360p (готовый mp4)")
     logger.info(f"🎵 TikTok: лучшее качество")
-    logger.info(f"🖼 Превью: вшивается в видео")
+    logger.info(f"🖼 Превью: скачивается отдельно для Telegram")
     logger.info(f"📦 Макс. размер: {MAX_FILE_SIZE_MB} MB")
     logger.info(f"⏱ Таймаут загрузки: {DOWNLOAD_TIMEOUT}s")
     logger.info(f"🔧 yt-dlp версия: {yt_dlp.version.__version__}")
-    logger.info(f"⚡ С постобработкой (FFmpeg)")
-    
-    # Проверка FFmpeg
-    import subprocess
-    try:
-        result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True, timeout=5)
-        logger.info(f"✅ FFmpeg найден: {result.stdout.split(chr(10))[0][:50]}...")
-    except:
-        logger.error("❌ FFmpeg не найден! Установите FFmpeg для вшивания превью")
-        logger.error("   Скачать: https://ffmpeg.org/download.html")
+    logger.info(f"⚡ Без постобработки (быстрая загрузка)")
     
     try:
         test_file = os.path.join(DOWNLOAD_FOLDER, '.write_test')
@@ -702,10 +682,10 @@ async def main():
         print("=" * 60)
         print(f"  📝 Отправьте ссылку на видео")
         print(f"  📺 YouTube: 360p | 🎵 TikTok: лучшее")
-        print(f"  🖼 Превью: вшивается автоматически")
+        print(f"  🖼 Превью: скачивается отдельно")
         print(f"  ⏱ Таймаут: 10 мин")
         print(f"  🚫 Отмена: /cancel в любой момент")
-        print(f"  ⚡ Требуется FFmpeg")
+        print(f"  ⚡ Без перекодирования")
         print("=" * 60)
         print()
         
@@ -731,18 +711,5 @@ if __name__ == '__main__':
         print(f"❌ Отсутствуют зависимости: {e}")
         print("📦 Установите: pip install yt-dlp telethon")
         exit(1)
-    
-    # Проверка FFmpeg
-    import subprocess
-    try:
-        subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
-    except:
-        print("⚠️ ВНИМАНИЕ: FFmpeg не найден!")
-        print("📦 FFmpeg необходим для вшивания превью в видео")
-        print("🔗 Скачайте с: https://ffmpeg.org/download.html")
-        print()
-        response = input("Продолжить без FFmpeg? (y/n): ")
-        if response.lower() != 'y':
-            exit(1)
     
     client.loop.run_until_complete(main())
