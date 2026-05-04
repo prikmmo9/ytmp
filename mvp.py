@@ -46,6 +46,19 @@ user_downloads = {}
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ============================================================
 
+def check_aria2():
+    """Проверяет, установлен ли aria2c"""
+    import subprocess
+    try:
+        subprocess.run(['aria2c', '--version'], capture_output=True, timeout=2)
+        return True
+    except:
+        return False
+
+
+ARIA2_AVAILABLE = check_aria2()
+
+
 def detect_platform(url: str) -> Tuple[Optional[str], Optional[str]]:
     """
     Определяет платформу и очищает URL.
@@ -316,40 +329,103 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
         'retries': 3,
         'fragment_retries': 3,
         'skip_unavailable_fragments': True,
+        'concurrent_fragment_downloads': 8,  # Многопоточная загрузка фрагментов
+        'buffersize': 1024 * 1024,  # Буфер 1MB для ускорения
+        'http_chunk_size': 10 * 1024 * 1024,  # Чанки по 10MB
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
         }
     }
     
     # Опции зависят от платформы
     if platform == 'youtube':
+        # Базовые опции для YouTube
         ydl_opts = {
             **base_opts,
-            # Для YouTube: готовый mp4 формат 18 (360p с аудио)
-            'format': '18/best[height<=360][ext=mp4]/best[height<=480][ext=mp4]/best[ext=mp4]/best',
             'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
-            # Отключаем постобработку для скорости
-            'postprocessors': [],
-            'prefer_ffmpeg': False,
-            'merge_output_format': None,
+            'merge_output_format': 'mp4',
         }
+        
+        # Если aria2 доступен - используем его для максимальной скорости
+        if ARIA2_AVAILABLE:
+            logger.info("🚀 Используется aria2c для многопоточной загрузки (8 потоков)")
+            ydl_opts.update({
+                'external_downloader': 'aria2c',
+                'external_downloader_args': [
+                    '-x', '8',      # 8 соединений
+                    '-s', '8',      # 8 потоков
+                    '-k', '1M',     # Размер чанка 1MB
+                    '--max-connection-per-server=8',
+                    '--min-split-size=1M',
+                    '--file-allocation=none',
+                    '--async-dns=true',
+                    '--optimize-concurrent-downloads=true',
+                ],
+                'format': (
+                    # Приоритет: mp4 с видео+аудио до 480p
+                    'best[height<=480][ext=mp4][vcodec^=avc]/'
+                    'best[height<=360][ext=mp4][vcodec^=avc]/'
+                    'best[height<=480][ext=mp4]/'
+                    'best[height<=360][ext=mp4]/'
+                    'best[ext=mp4]/'
+                    'best'
+                ),
+            })
+        else:
+            logger.info("⚡ Используется встроенный загрузчик (оптимизированный)")
+            ydl_opts.update({
+                'format': (
+                    # Выбираем лучший mp4 формат, который уже содержит аудио
+                    'best[height<=480][ext=mp4][vcodec^=avc]/'
+                    'best[height<=360][ext=mp4][vcodec^=avc]/'
+                    'best[height<=480][ext=mp4]/'
+                    'best[height<=360][ext=mp4]/'
+                    'bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/'
+                    'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/'
+                    'best[ext=mp4]/'
+                    'best'
+                ),
+            })
+    
     elif platform == 'tiktok':
-        ydl_opts = {
-            **base_opts,
-            # Для TikTok: лучшее качество, обычно mp4
-            'format': 'best[ext=mp4]/best',
-            'outtmpl': f'{DOWNLOAD_FOLDER}/%(uploader)s_%(title).100s_%(id)s.%(ext)s',
-            # TikTok обычно отдает готовые mp4 файлы
-            'postprocessors': [],
-            'prefer_ffmpeg': False,
-            'merge_output_format': None,
-            # Специфичные для TikTok
-            'extractor_args': {
-                'tiktok': {
-                    'api_hostname': 'api16-normal-c-useast1a.tiktokv.com',
-                }
-            },
-        }
+        # TikTok обычно отдает готовые mp4, оптимизируем под это
+        if ARIA2_AVAILABLE:
+            logger.info("🚀 Используется aria2c для TikTok (4 потока)")
+            ydl_opts = {
+                **base_opts,
+                'format': 'best[ext=mp4]/best',
+                'outtmpl': f'{DOWNLOAD_FOLDER}/%(uploader)s_%(title).100s_%(id)s.%(ext)s',
+                'postprocessors': [],
+                'prefer_ffmpeg': False,
+                'merge_output_format': None,
+                'external_downloader': 'aria2c',
+                'external_downloader_args': [
+                    '-x', '4',
+                    '-s', '4',
+                    '-k', '1M',
+                    '--file-allocation=none',
+                ],
+                'extractor_args': {
+                    'tiktok': {
+                        'api_hostname': 'api16-normal-c-useast1a.tiktokv.com',
+                    }
+                },
+            }
+        else:
+            ydl_opts = {
+                **base_opts,
+                'format': 'best[ext=mp4]/best',
+                'outtmpl': f'{DOWNLOAD_FOLDER}/%(uploader)s_%(title).100s_%(id)s.%(ext)s',
+                'postprocessors': [],
+                'prefer_ffmpeg': False,
+                'merge_output_format': None,
+                'extractor_args': {
+                    'tiktok': {
+                        'api_hostname': 'api16-normal-c-useast1a.tiktokv.com',
+                    }
+                },
+            }
     else:
         logger.error(f"Неизвестная платформа: {platform}")
         return None
@@ -422,7 +498,8 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 download_time = time.time() - download_start
-                logger.info(f"⏱ Скачивание заняло: {download_time:.1f}с")
+                download_speed = (os.path.getsize(ydl.prepare_filename(info)) / (1024 * 1024)) / download_time if download_time > 0 else 0
+                logger.info(f"⏱ Скачивание заняло: {download_time:.1f}с (скорость: {download_speed:.1f} MB/s)")
         except Exception as e:
             if str(e) == "DOWNLOAD_CANCELLED" or cancel_event.is_set():
                 logger.info("🛑 Скачивание прервано пользователем")
@@ -531,9 +608,10 @@ async def start_handler(event):
         f"🎬 **Привет, {user_name}!**\n\n"
         "Я - Media Download Bot! 🤖\n\n"
         "**Что я умею:**\n"
-        "• Скачиваю видео с **YouTube** в качестве 360p\n"
+        "• Скачиваю видео с **YouTube** до 480p\n"
         "• Скачиваю видео с **TikTok** в лучшем качестве\n"
-        "• Показываю ВСЮ информацию о видео!\n\n"
+        "• Показываю ВСЮ информацию о видео!\n"
+        f"• {'🚀 Многопоточная загрузка (aria2c)' if ARIA2_AVAILABLE else '⚡ Оптимизированная загрузка'}\n\n"
         "**Как использовать:**\n"
         "Просто отправь мне ссылку на видео!\n\n"
         "**Поддерживаемые платформы:**\n"
@@ -550,7 +628,7 @@ async def start_handler(event):
         "• Макс. размер: 2GB\n"
         "• Только открытые видео\n"
         "• По одной загрузке за раз\n\n"
-        "📊 YouTube: 360p | 🎵 TikTok: лучшее качество"
+        f"📊 YouTube: до 480p | 🎵 TikTok: лучшее качество | {'🚀' if ARIA2_AVAILABLE else '⚡'} Скоростная загрузка"
     )
     
     await event.reply(welcome)
@@ -568,6 +646,7 @@ async def help_handler(event):
         "3️⃣ Проверит видео и покажет ВСЮ информацию\n"
         "4️⃣ Начнется загрузка\n"
         "5️⃣ Видео отправится вам с подробным описанием\n\n"
+        f"⚡ **Статус ускорения:** {'🚀 aria2c активирован (8 потоков)' if ARIA2_AVAILABLE else '⚡ Встроенный загрузчик (оптимизирован)'}\n\n"
         "⚠️ **Важно:**\n"
         "• Загружается только одно видео за раз\n"
         "• Дождитесь окончания текущей загрузки\n"
@@ -637,11 +716,14 @@ async def message_handler(event):
     cancel_event = threading.Event()
     user_downloads[user_id] = cancel_event
     
+    speed_text = "🚀 Многопоточная (aria2c)" if ARIA2_AVAILABLE else "⚡ Оптимизированная"
+    
     status_msg = await event.reply(
         f"{platform_emoji} **Начинаю загрузку видео...**\n"
         f"🌐 Платформа: **{platform_name}**\n"
         "🔍 Получаю полную информацию...\n"
-        "⏳ Пожалуйста, подождите... (отмена: /cancel)"
+        f"⏳ Пожалуйста, подождите... (отмена: /cancel)\n"
+        f"{speed_text}"
     )
     
     start_time = datetime.now()
@@ -768,7 +850,7 @@ async def message_handler(event):
             
             caption_parts.extend([
                 f"💾 **Размер:** {file_size_mb:.1f} MB",
-                f"📊 **Качество:** 360p (YouTube)",
+                f"📊 **Качество:** до 480p (YouTube)",
                 f"🔗 {video_info['url']}"
             ])
             
@@ -896,13 +978,18 @@ async def main():
     console_logger.separator("ЗАПУСК БОТА", char="=")
     
     logger.info(f"📁 Папка загрузок: {os.path.abspath(DOWNLOAD_FOLDER)}")
-    logger.info(f"📺 YouTube: 360p (готовый mp4)")
+    logger.info(f"📺 YouTube: до 480p (оптимизированные форматы)")
     logger.info(f"🎵 TikTok: лучшее качество")
     logger.info(f"📦 Макс. размер: {MAX_FILE_SIZE_MB} MB")
     logger.info(f"⏱ Таймаут загрузки: {DOWNLOAD_TIMEOUT}s")
     logger.info(f"🔧 yt-dlp версия: {yt_dlp.version.__version__}")
-    logger.info(f"⚡ Быстрая загрузка (без постобработки)")
     logger.info(f"📋 Вывод ВСЕЙ информации о видео")
+    
+    if ARIA2_AVAILABLE:
+        logger.info("🚀 aria2c обнаружен - используется многопоточная загрузка (8 потоков)")
+    else:
+        logger.info("⚡ aria2c не найден - используется встроенный загрузчик (оптимизированный)")
+        logger.info("💡 Установите aria2 для максимальной скорости: sudo apt install aria2")
     
     try:
         test_file = os.path.join(DOWNLOAD_FOLDER, '.write_test')
@@ -926,10 +1013,13 @@ async def main():
         print(f"  🤖 БОТ ЗАПУЩЕН: @{me.username}")
         print("=" * 60)
         print(f"  📝 Отправьте ссылку на видео")
-        print(f"  📺 YouTube: 360p | 🎵 TikTok: лучшее")
+        print(f"  📺 YouTube: до 480p | 🎵 TikTok: лучшее")
         print(f"  ⏱ Таймаут: 10 мин")
         print(f"  🚫 Отмена: /cancel в любой момент")
-        print(f"  ⚡ Быстрая загрузка")
+        if ARIA2_AVAILABLE:
+            print(f"  🚀 Многопоточная загрузка (aria2c)")
+        else:
+            print(f"  ⚡ Оптимизированная загрузка")
         print(f"  📋 Показывает ВСЮ информацию")
         print("=" * 60)
         print()
