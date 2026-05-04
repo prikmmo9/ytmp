@@ -13,9 +13,9 @@ from logger_config import create_logger
 # ============================================================
 # КОНФИГУРАЦИЯ
 # ============================================================
-API_ID = 1234567
-API_HASH = 'your_api_hash'
-BOT_TOKEN = 'your_bot_token'
+BOT_TOKEN=8566350925:AAEOwpPgXhmR3SE_7TapSbzMJnqImnMA-Js
+API_ID=22268845
+API_HASH=ffbeffdfb86784e12b39aea5f53857d2
 
 DOWNLOAD_FOLDER = 'downloads'
 MAX_FILE_SIZE_MB = 2000
