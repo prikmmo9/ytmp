@@ -21,7 +21,7 @@ BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8566350925:AAEOwpPgXhmR3SE_7TapSbzM
 
 DOWNLOAD_FOLDER = 'downloads'
 MAX_FILE_SIZE_MB = 2000
-DOWNLOAD_TIMEOUT = 1800  # 30 минут на скачивание
+DOWNLOAD_TIMEOUT = 600  # 10 минут на скачивание
 
 # Создаем консольный логгер
 console_logger = create_logger(
@@ -80,6 +80,7 @@ def detect_platform(url: str) -> Tuple[Optional[str], Optional[str]]:
     for pattern in tiktok_patterns:
         match = re.match(pattern, url)
         if match:
+            # Возвращаем оригинальный URL, yt-dlp сам разберется
             return 'tiktok', url
     
     return None, None
@@ -105,26 +106,23 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
     base_opts = {
         'quiet': True,
         'no_warnings': True,
-        'socket_timeout': 60,
-        'retries': 10,
-        'fragment_retries': 10,
+        'socket_timeout': 30,
+        'retries': 3,
+        'fragment_retries': 3,
         'skip_unavailable_fragments': True,
-        'concurrent_fragment_downloads': 8,
-        'buffersize': 32768,
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        },
-        'external_downloader': 'native',
-        'extractor_retries': 5,
-        'file_access_retries': 5,
+        }
     }
     
+    # Опции зависят от платформы
     if platform == 'youtube':
         ydl_opts = {
             **base_opts,
-            'format': '18/best[height<=480][ext=mp4]/best[ext=mp4]/best',
+            # Для YouTube: готовый mp4 формат 18 (360p с аудио)
+            'format': '18/best[height<=360][ext=mp4]/best[height<=480][ext=mp4]/best[ext=mp4]/best',
             'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
-            'writethumbnail': True,
+            # Отключаем постобработку для скорости
             'postprocessors': [],
             'prefer_ffmpeg': False,
             'merge_output_format': None,
@@ -132,12 +130,14 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
     elif platform == 'tiktok':
         ydl_opts = {
             **base_opts,
+            # Для TikTok: лучшее качество, обычно mp4
             'format': 'best[ext=mp4]/best',
             'outtmpl': f'{DOWNLOAD_FOLDER}/%(uploader)s_%(title).100s_%(id)s.%(ext)s',
-            'writethumbnail': True,
+            # TikTok обычно отдает готовые mp4 файлы
             'postprocessors': [],
             'prefer_ffmpeg': False,
             'merge_output_format': None,
+            # Специфичные для TikTok
             'extractor_args': {
                 'tiktok': {
                     'api_hostname': 'api16-normal-c-useast1a.tiktokv.com',
@@ -156,13 +156,12 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
         return None
     
     try:
-        # Опции для получения информации
+        # Опции для быстрого получения информации
         info_opts = {
             **ydl_opts,
             'skip_download': True,
-            'no_check_formats': False,
+            'no_check_formats': True,  # КРИТИЧНО: ускоряет проверку
             'playlistend': 1,
-            'writethumbnail': False,
         }
         
         info_start = time.time()
@@ -181,286 +180,62 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
             logger.info("🛑 Загрузка отменена (после получения информации)")
             return None
         
-        # ============================================================
-        # ВЫВОДИМ ВСЮ ИНФОРМАЦИЮ ОТ YT-DLP
-        # ============================================================
+        # Показываем информацию
+        if platform == 'youtube':
+            console_logger.video_info({
+                'title': info.get('title', 'N/A'),
+                'uploader': info.get('uploader', 'N/A'),
+                'duration': info.get('duration', 0),
+                'view_count': info.get('view_count', 0),
+                'url': url
+            })
+        elif platform == 'tiktok':
+            # Для TikTok своя информация
+            logger.info(f"🎵 Платформа: TikTok")
+            logger.info(f"🎬 Название: {info.get('title', 'N/A')[:60]}")
+            logger.info(f"👤 Автор: {info.get('uploader', 'N/A')}")
+            logger.info(f"⏱ Длительность: {info.get('duration', 0)}с")
+            logger.info(f"❤️ Лайков: {info.get('like_count', 'N/A')}")
+            logger.info(f"💬 Комментариев: {info.get('comment_count', 'N/A')}")
         
-        console_logger.separator("ПОЛНАЯ ИНФОРМАЦИЯ О ВИДЕО")
-        
-        # Основная информация
-        logger.info(f"🆔 ID: {info.get('id', 'N/A')}")
-        logger.info(f"📝 Название: {info.get('title', 'N/A')}")
-        logger.info(f"📝 Полное название: {info.get('fulltitle', info.get('title', 'N/A'))}")
-        logger.info(f"📄 Описание: {info.get('description', 'N/A')[:200]}...")
-        
-        # Информация о канале/авторе
-        logger.info(f"👤 Автор: {info.get('uploader', 'N/A')}")
-        logger.info(f"🆔 ID автора: {info.get('uploader_id', 'N/A')}")
-        logger.info(f"🔗 URL автора: {info.get('uploader_url', 'N/A')}")
-        logger.info(f"📺 Канал: {info.get('channel', info.get('uploader', 'N/A'))}")
-        logger.info(f"🆔 ID канала: {info.get('channel_id', 'N/A')}")
-        logger.info(f"🔗 URL канала: {info.get('channel_url', 'N/A')}")
-        logger.info(f"👥 Подписчиков: {info.get('channel_follower_count', 'N/A')}")
-        
-        # Временные метки
-        duration = info.get('duration', 0)
-        if duration:
-            minutes, secs = divmod(int(duration), 60)
-            hours, minutes = divmod(minutes, 60)
-            if hours > 0:
-                duration_str = f"{hours}:{minutes:02d}:{secs:02d}"
-            else:
-                duration_str = f"{minutes}:{secs:02d}"
-        else:
-            duration_str = "N/A"
-        logger.info(f"⏱ Длительность: {duration} секунд ({duration_str})")
-        logger.info(f"⏱ Длительность (строка): {info.get('duration_string', 'N/A')}")
-        
-        # Статистика
-        view_count = info.get('view_count', 0)
-        if view_count:
-            logger.info(f"👁 Просмотров: {view_count:,}")
-        else:
-            logger.info(f"👁 Просмотров: N/A")
-            
-        like_count = info.get('like_count')
-        if like_count is not None:
-            logger.info(f"👍 Лайков: {like_count:,}")
-        else:
-            logger.info(f"👍 Лайков: N/A")
-            
-        dislike_count = info.get('dislike_count')
-        if dislike_count is not None:
-            logger.info(f"👎 Дизлайков: {dislike_count:,}")
-            
-        comment_count = info.get('comment_count')
-        if comment_count is not None:
-            logger.info(f"💬 Комментариев: {comment_count:,}")
-        else:
-            logger.info(f"💬 Комментариев: N/A")
-            
-        logger.info(f"⭐ Рейтинг: {info.get('average_rating', 'N/A')}")
-        
-        # Возрастные ограничения
-        age_limit = info.get('age_limit', 0)
-        if age_limit > 0:
-            logger.info(f"🔞 Возрастное ограничение: {age_limit}+")
-        else:
-            logger.info(f"🔞 Возрастное ограничение: нет")
-        
-        # Категории и теги
-        categories = info.get('categories', [])
-        if categories:
-            logger.info(f"📂 Категории: {', '.join(categories)}")
-        else:
-            logger.info(f"📂 Категории: N/A")
-            
-        tags = info.get('tags', [])
-        if tags:
-            logger.info(f"🏷 Теги: {', '.join(tags[:10])}{'...' if len(tags) > 10 else ''}")
-        else:
-            logger.info(f"🏷 Теги: N/A")
-        
-        # Информация о веб-странице
-        logger.info(f"🌐 URL: {info.get('webpage_url', 'N/A')}")
-        logger.info(f"🔗 Оригинальный URL: {info.get('original_url', 'N/A')}")
-        
-        # Информация об извлечении
-        logger.info(f"🔧 Extractor: {info.get('extractor', 'N/A')}")
-        logger.info(f"🔑 Extractor key: {info.get('extractor_key', 'N/A')}")
-        
-        # Язык и регион
-        language = info.get('language')
-        if language:
-            logger.info(f"🌍 Язык: {language}")
-        else:
-            logger.info(f"🌍 Язык: не указан")
-        
-        # Информация о файле
-        logger.info(f"📁 Расширение: {info.get('ext', 'N/A')}")
-        logger.info(f"🎬 Формат: {info.get('format', 'N/A')}")
-        logger.info(f"📊 Format ID: {info.get('format_id', 'N/A')}")
-        
-        # Размеры и качество
-        width = info.get('width')
-        height = info.get('height')
-        if width and height:
-            logger.info(f"📐 Разрешение: {width}x{height}")
-        else:
-            logger.info(f"📐 Разрешение: N/A")
-            
-        logger.info(f"🎞 FPS: {info.get('fps', 'N/A')}")
-        
-        vbr = info.get('vbr')
-        if vbr:
-            logger.info(f"📊 Битрейт видео: {vbr} kbps")
-        else:
-            logger.info(f"📊 Битрейт видео: N/A")
-            
-        abr = info.get('abr')
-        if abr:
-            logger.info(f"🎵 Битрейт аудио: {abr} kbps")
-        else:
-            logger.info(f"🎵 Битрейт аудио: N/A")
-        
-        filesize = info.get('filesize_approx') or info.get('filesize')
-        if filesize:
-            filesize_mb = filesize / (1024 * 1024)
-            logger.info(f"📦 Размер файла (примерно): {filesize_mb:.1f} MB")
-        else:
-            logger.info(f"📦 Размер файла: неизвестен")
-        
-        # Кодеки
-        logger.info(f"🎬 Видео кодек: {info.get('vcodec', 'N/A')}")
-        logger.info(f"🎵 Аудио кодек: {info.get('acodec', 'N/A')}")
-        
-        # Превью
-        thumbnail = info.get('thumbnail')
-        if thumbnail:
-            logger.info(f"🖼 Превью URL: {thumbnail[:100]}...")
-        else:
-            logger.info(f"🖼 Превью: отсутствует")
-        
-        # Дата
-        upload_date = info.get('upload_date')
-        if upload_date:
-            try:
-                date_obj = datetime.strptime(str(upload_date), '%Y%m%d')
-                logger.info(f"📅 Дата загрузки: {date_obj.strftime('%d.%m.%Y')}")
-            except:
-                logger.info(f"📅 Дата загрузки: {upload_date}")
-        else:
-            logger.info(f"📅 Дата загрузки: N/A")
-        
-        # Лицензия
-        license = info.get('license')
-        if license:
-            logger.info(f"📜 Лицензия: {license}")
-        
-        # Плейлисты
-        playlist = info.get('playlist')
-        if playlist:
-            logger.info(f"📋 Плейлист: {playlist}")
-        playlist_index = info.get('playlist_index')
-        if playlist_index:
-            logger.info(f"📋 Индекс в плейлисте: {playlist_index}")
-        
-        # Субтитры
-        if 'subtitles' in info and info['subtitles']:
-            langs = list(info['subtitles'].keys())
-            logger.info(f"📝 Доступные субтитры: {', '.join(langs)}")
-        else:
-            logger.info(f"📝 Субтитры: отсутствуют")
-        
-        # Автоматические субтитры
-        if 'automatic_captions' in info and info['automatic_captions']:
-            auto_langs = list(info['automatic_captions'].keys())
-            logger.info(f"🤖 Авто-субтитры: {', '.join(auto_langs)}")
-        else:
-            logger.info(f"🤖 Авто-субтитры: отсутствуют")
-        
-        # Форматы
-        if 'formats' in info and info['formats']:
-            formats_count = len(info['formats'])
-            logger.info(f"📼 Доступные форматы: {formats_count} шт.")
-            
-            # Покажем первые 5 форматов
-            for i, fmt in enumerate(info['formats'][:5]):
-                fmt_id = fmt.get('format_id', '?')
-                ext = fmt.get('ext', '?')
-                resolution = fmt.get('resolution', '?')
-                filesize_fmt = fmt.get('filesize')
-                if filesize_fmt:
-                    size_str = f"{filesize_fmt / (1024*1024):.1f}MB"
-                else:
-                    size_str = "?MB"
-                vcodec = fmt.get('vcodec', '?')
-                acodec = fmt.get('acodec', '?')
-                
-                logger.info(f"  [{fmt_id}] {ext} {resolution} ({size_str}) v:{vcodec} a:{acodec}")
-            
-            if formats_count > 5:
-                logger.info(f"  ... и еще {formats_count - 5} форматов")
-        
-        # Requested formats
-        if 'requested_formats' in info and info['requested_formats']:
-            logger.info(f"🎯 Запрошенные форматы:")
-            for fmt in info['requested_formats']:
-                fmt_id = fmt.get('format_id', '?')
-                ext = fmt.get('ext', '?')
-                resolution = fmt.get('resolution', '?')
-                vcodec = fmt.get('vcodec', '?')
-                acodec = fmt.get('acodec', '?')
-                logger.info(f"  [{fmt_id}] {ext} {resolution} v:{vcodec} a:{acodec}")
-        
-        console_logger.separator()
-        
-        # Шаг 2: Скачивание видео и превью
-        console_logger.step("Скачивание видео и превью...", current=2, total=3)
+        # Шаг 2: Скачивание
+        console_logger.step("Скачивание видео...", current=2, total=3)
         
         if cancel_event.is_set():
             logger.info("🛑 Загрузка отменена (перед скачиванием)")
             return None
         
         download_start = time.time()
-        last_progress_time = time.time()
         
         def progress_hook(d):
-            nonlocal last_progress_time
-            
             if d['status'] == 'downloading':
                 try:
+                    percent_str = d.get('_percent_str', '0%').strip().replace('%', '')
+                    percent = float(percent_str) if percent_str else 0
+                    speed = d.get('_speed_str', '')
+                    eta = d.get('_eta_str', '')
+                    
                     if cancel_event.is_set():
                         logger.info("🛑 Отмена загрузки во время скачивания")
                         raise Exception("DOWNLOAD_CANCELLED")
                     
-                    current_time = time.time()
-                    percent_str = d.get('_percent_str', '0%').strip().replace('%', '')
-                    percent = float(percent_str) if percent_str else 0
-                    speed = d.get('_speed_str', 'N/A')
-                    eta = d.get('_eta_str', 'N/A')
-                    
-                    # Показываем прогресс каждые 2 секунды
-                    if current_time - last_progress_time >= 2 or percent >= 99:
-                        console_logger.download_progress(percent, speed=speed, eta=eta)
-                        last_progress_time = current_time
-                        
+                    console_logger.download_progress(percent, speed=speed, eta=eta)
                 except Exception as e:
                     if str(e) == "DOWNLOAD_CANCELLED":
                         raise
-                    logger.debug(f"Ошибка в progress_hook: {e}")
-            
-            elif d['status'] == 'finished':
-                logger.info(f"✅ Скачивание завершено!")
-                total_bytes = d.get('total_bytes', 0)
-                if total_bytes:
-                    logger.info(f"   Размер: {total_bytes / (1024*1024):.1f} MB")
-                elapsed = d.get('elapsed', 0)
-                if elapsed:
-                    logger.info(f"   Время: {elapsed:.1f} сек")
+                    pass
         
         ydl_opts['progress_hooks'] = [progress_hook]
-        
-        logger.info("🚀 Начинаю скачивание...")
         
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 download_time = time.time() - download_start
-                
-                if download_time > 60:
-                    minutes = int(download_time // 60)
-                    seconds = int(download_time % 60)
-                    time_str = f"{minutes}м {seconds}с"
-                else:
-                    time_str = f"{download_time:.1f}с"
-                    
-                logger.info(f"⏱ Общее время скачивания: {time_str}")
+                logger.info(f"⏱ Скачивание заняло: {download_time:.1f}с")
         except Exception as e:
             if str(e) == "DOWNLOAD_CANCELLED" or cancel_event.is_set():
                 logger.info("🛑 Скачивание прервано пользователем")
                 return None
-            logger.error(f"Ошибка при скачивании: {str(e)[:500]}")
             raise
         
         if cancel_event.is_set():
@@ -468,19 +243,14 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
             file_path = ydl.prepare_filename(info)
             if os.path.exists(file_path):
                 os.remove(file_path)
-            base_path = os.path.splitext(file_path)[0]
-            for ext in ['.jpg', '.jpeg', '.png', '.webp']:
-                thumb = base_path + ext
-                if os.path.exists(thumb):
-                    os.remove(thumb)
             return None
         
-        # Шаг 3: Проверка файлов
-        console_logger.step("Проверка файлов...", current=3, total=3)
+        # Шаг 3: Проверка файла
+        console_logger.step("Проверка файла...", current=3, total=3)
         
         file_path = ydl.prepare_filename(info)
         
-        # Ищем видео файл если расширение не совпало
+        # Ищем файл если расширение не совпало
         if not os.path.exists(file_path):
             base = os.path.splitext(file_path)[0]
             for ext in ['.mp4', '.webm', '.mkv', '.mov', '.flv']:
@@ -493,39 +263,14 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
                 pattern = f"{DOWNLOAD_FOLDER}/*{info.get('id', '')}*"
                 possible = glob.glob(pattern)
                 if possible:
-                    video_files = [f for f in possible if not f.endswith(('.jpg', '.jpeg', '.png', '.webp'))]
-                    if video_files:
-                        file_path = video_files[0]
-                    else:
-                        file_path = possible[0]
+                    file_path = possible[0]
                 else:
                     logger.error(f"Файл не найден: {file_path}")
                     return None
         
-        # Ищем файл превью
-        thumbnail_path = None
-        base_path = os.path.splitext(file_path)[0]
-        for ext in ['.jpg', '.jpeg', '.png', '.webp']:
-            potential_thumb = base_path + ext
-            if os.path.exists(potential_thumb):
-                thumbnail_path = potential_thumb
-                break
-        
-        if not thumbnail_path:
-            import glob
-            thumb_pattern = f"{DOWNLOAD_FOLDER}/*{info.get('id', '')}*.jpg"
-            possible_thumbs = glob.glob(thumb_pattern)
-            if possible_thumbs:
-                thumbnail_path = possible_thumbs[0]
-        
         file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
         
-        logger.info(f"📁 Видео: {os.path.basename(file_path)} | Размер: {file_size_mb:.1f} MB")
-        if thumbnail_path:
-            thumb_size = os.path.getsize(thumbnail_path) / 1024
-            logger.info(f"🖼 Превью: {os.path.basename(thumbnail_path)} ({thumb_size:.1f} KB)")
-        else:
-            logger.warning("⚠️ Превью не найдено")
+        logger.info(f"📁 Файл: {os.path.basename(file_path)} | Размер: {file_size_mb:.1f} MB")
         
         # Для TikTok duration может быть float
         duration = info.get('duration', 0)
@@ -537,7 +282,6 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
             'uploader': info.get('uploader') or 'Неизвестный автор',
             'duration': duration,
             'file_path': file_path,
-            'thumbnail_path': thumbnail_path,
             'file_size_mb': file_size_mb,
             'url': url,
             'platform': platform,
@@ -546,13 +290,13 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
             
     except yt_dlp.utils.DownloadError as e:
         error_msg = str(e)
-        logger.error(f"yt-dlp error: {error_msg[:500]}")
+        logger.error(f"yt-dlp error: {error_msg[:200]}")
         raise
     except Exception as e:
         if str(e) == "DOWNLOAD_CANCELLED":
             logger.info("🛑 Загрузка отменена пользователем")
             return None
-        logger.error(f"Ошибка при скачивании: {str(e)[:500]}")
+        logger.error(f"Ошибка при скачивании: {str(e)[:200]}")
         raise
 
 
@@ -578,9 +322,7 @@ async def start_handler(event):
         "Я - Media Download Bot! 🤖\n\n"
         "**Что я умею:**\n"
         "• Скачиваю видео с **YouTube** в качестве 360p\n"
-        "• Скачиваю видео с **TikTok** в лучшем качестве\n"
-        "• 🖼 **Добавляю превью к видео в Telegram**\n"
-        "• 📊 **Показываю полную информацию о видео**\n\n"
+        "• Скачиваю видео с **TikTok** в лучшем качестве\n\n"
         "**Как использовать:**\n"
         "Просто отправь мне ссылку на видео!\n\n"
         "**Поддерживаемые платформы:**\n"
@@ -596,9 +338,8 @@ async def start_handler(event):
         "**Ограничения:**\n"
         "• Макс. размер: 2GB\n"
         "• Только открытые видео\n"
-        "• По одной загрузке за раз\n"
-        "• Таймаут: 30 минут\n\n"
-        "📊 YouTube: 360p | 🎵 TikTok: лучшее качество | 🖼 С превью"
+        "• По одной загрузке за раз\n\n"
+        "📊 YouTube: 360p | 🎵 TikTok: лучшее качество"
     )
     
     await event.reply(welcome)
@@ -613,15 +354,13 @@ async def help_handler(event):
         "📖 **Справка по использованию**\n\n"
         "1️⃣ Отправьте ссылку на видео\n"
         "2️⃣ Бот определит платформу автоматически\n"
-        "3️⃣ Покажет полную информацию о видео\n"
-        "4️⃣ Скачает видео и превью\n"
-        "5️⃣ Отправит видео с превью в Telegram\n\n"
+        "3️⃣ Проверит видео и покажет информацию\n"
+        "4️⃣ Начнется загрузка\n"
+        "5️⃣ Видео отправится вам\n\n"
         "⚠️ **Важно:**\n"
         "• Загружается только одно видео за раз\n"
         "• Дождитесь окончания текущей загрузки\n"
-        "• Не отправляйте новую ссылку пока идет загрузка\n"
-        "• Превью добавляется без изменения видео\n"
-        "• Для длинных видео может потребоваться время\n\n"
+        "• Не отправляйте новую ссылку пока идет загрузка\n\n"
         "**Команды:**\n"
         "/start - Главное меню\n"
         "/help - Эта справка\n"
@@ -690,10 +429,8 @@ async def message_handler(event):
     status_msg = await event.reply(
         f"{platform_emoji} **Начинаю загрузку видео...**\n"
         f"🌐 Платформа: **{platform_name}**\n"
-        "🔍 Получаю информацию...\n"
-        "🖼 Скачаю превью для видео\n"
-        "⏳ Пожалуйста, подождите... (отмена: /cancel)\n"
-        "⏰ Таймаут: 30 минут"
+        "🔍 Проверяю доступность...\n"
+        "⏳ Пожалуйста, подождите... (отмена: /cancel)"
     )
     
     start_time = datetime.now()
@@ -716,11 +453,9 @@ async def message_handler(event):
             )
         except asyncio.TimeoutError:
             await status_msg.edit(
-                "⏰ **Превышено время ожидания (30 минут)**\n\n"
-                "Загрузка заняла слишком много времени и была отменена.\n"
-                "Попробуйте:\n"
-                "• Видео покороче\n"
-                "• Проверить скорость интернета"
+                "⏰ **Превышено время ожидания**\n\n"
+                "Загрузка заняла более 10 минут и была отменена.\n"
+                "Попробуйте другое видео или проверьте скорость интернета."
             )
             logger.error(f"⏰ Таймаут загрузки для {clean_url}")
             return
@@ -734,7 +469,6 @@ async def message_handler(event):
             return
         
         file_path = video_info['file_path']
-        thumbnail_path = video_info.get('thumbnail_path')
         file_size_mb = video_info['file_size_mb']
         
         if file_size_mb > MAX_FILE_SIZE_MB:
@@ -745,13 +479,10 @@ async def message_handler(event):
             )
             if os.path.exists(file_path):
                 os.remove(file_path)
-            if thumbnail_path and os.path.exists(thumbnail_path):
-                os.remove(thumbnail_path)
             return
         
         await status_msg.edit(
             f"✅ **Видео скачано!** ({file_size_mb:.1f} MB)\n"
-            f"{'🖼 Превью готово' if thumbnail_path else '⚠️ Без превью'}\n"
             f"📤 Отправляю вам файл..."
         )
         
@@ -765,11 +496,7 @@ async def message_handler(event):
         duration = video_info.get('duration', 0)
         if platform == 'youtube' and duration > 0:
             minutes, secs = divmod(int(duration), 60)
-            hours, minutes = divmod(minutes, 60)
-            if hours > 0:
-                duration_str = f"{hours}:{minutes:02d}:{secs:02d}"
-            else:
-                duration_str = f"{minutes}:{secs:02d}"
+            duration_str = f"{minutes}:{secs:02d}"
         elif duration > 0:
             duration_str = f"{int(duration)}с"
         else:
@@ -782,7 +509,6 @@ async def message_handler(event):
                 f"⏱ **Длительность:** {duration_str}\n"
                 f"💾 **Размер:** {file_size_mb:.1f} MB\n"
                 f"📊 **Качество:** 360p\n"
-                f"🖼 **Превью:** {'есть' if thumbnail_path else 'нет'}\n"
                 f"🔗 {video_info['url']}"
             )
         else:  # TikTok
@@ -792,28 +518,18 @@ async def message_handler(event):
                 f"⏱ **Длительность:** {duration_str}\n"
                 f"💾 **Размер:** {file_size_mb:.1f} MB\n"
                 f"🌐 **Платформа:** TikTok\n"
-                f"🖼 **Превью:** {'есть' if thumbnail_path else 'нет'}\n"
                 f"🔗 {video_info['url']}"
             )
         
-        # Отправляем файл с превью
+        # Отправляем файл
         await client.send_file(
             entity=chat_id,
             file=file_path,
             caption=caption,
-            supports_streaming=True,
-            thumb=thumbnail_path,
-            video_note=False
+            supports_streaming=True
         )
         
         upload_time = (datetime.now() - start_time).total_seconds()
-        
-        if upload_time > 60:
-            minutes = int(upload_time // 60)
-            seconds = int(upload_time % 60)
-            total_time_str = f"{minutes}м {seconds}с"
-        else:
-            total_time_str = f"{upload_time:.1f}с"
         
         console_logger.end_operation("Отправка видео", success=True)
         
@@ -823,24 +539,19 @@ async def message_handler(event):
             f"✅ УСПЕШНО: {video_info['title'][:50]}... | "
             f"Платформа: {platform_name} | "
             f"Размер: {file_size_mb:.1f}MB | "
-            f"Общее время: {total_time_str} | "
-            f"Превью: {'есть' if thumbnail_path else 'нет'}"
+            f"Время: {upload_time:.1f}s"
         )
         
-        # Очистка временных файлов
         try:
             if os.path.exists(file_path):
                 os.remove(file_path)
-                logger.debug(f"Удален файл: {file_path}")
-            if thumbnail_path and os.path.exists(thumbnail_path):
-                os.remove(thumbnail_path)
-                logger.debug(f"Удалено превью: {thumbnail_path}")
         except Exception as e:
-            logger.warning(f"Не удалось удалить файлы: {e}")
+            logger.warning(f"Не удалось удалить файл {file_path}: {e}")
         
     except yt_dlp.utils.DownloadError as e:
         error_msg = str(e)
         
+        # Обработка ошибок для разных платформ
         if 'Video unavailable' in error_msg:
             error_text = "❌ **Видео недоступно**\n\n📌 Возможно, оно удалено или является приватным"
         elif 'Private video' in error_msg:
@@ -888,13 +599,10 @@ async def main():
     logger.info(f"📁 Папка загрузок: {os.path.abspath(DOWNLOAD_FOLDER)}")
     logger.info(f"📺 YouTube: 360p (готовый mp4)")
     logger.info(f"🎵 TikTok: лучшее качество")
-    logger.info(f"🖼 Превью: скачивается отдельно для Telegram")
-    logger.info(f"📊 Полная информация: показывается в консоли")
     logger.info(f"📦 Макс. размер: {MAX_FILE_SIZE_MB} MB")
-    logger.info(f"⏱ Таймаут загрузки: {DOWNLOAD_TIMEOUT}s (30 минут)")
+    logger.info(f"⏱ Таймаут загрузки: {DOWNLOAD_TIMEOUT}s")
     logger.info(f"🔧 yt-dlp версия: {yt_dlp.version.__version__}")
-    logger.info(f"⚡ Без постобработки (быстрая загрузка)")
-    logger.info(f"🔄 Параллельная загрузка: 8 потоков")
+    logger.info(f"⚡ Быстрая загрузка (без постобработки)")
     
     try:
         test_file = os.path.join(DOWNLOAD_FOLDER, '.write_test')
@@ -919,12 +627,9 @@ async def main():
         print("=" * 60)
         print(f"  📝 Отправьте ссылку на видео")
         print(f"  📺 YouTube: 360p | 🎵 TikTok: лучшее")
-        print(f"  🖼 Превью: скачивается отдельно")
-        print(f"  📊 Полная информация в консоли")
-        print(f"  ⏱ Таймаут: 30 минут")
+        print(f"  ⏱ Таймаут: 10 мин")
         print(f"  🚫 Отмена: /cancel в любой момент")
-        print(f"  ⚡ Без перекодирования")
-        print(f"  🔄 Параллельная загрузка")
+        print(f"  ⚡ Быстрая загрузка")
         print("=" * 60)
         print()
         
