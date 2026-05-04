@@ -1,9 +1,10 @@
-# youtube_bot_mvp.py (исправленная версия с полноценной отменой загрузки)
+# youtube_bot_mvp.py (исправленная версия с быстрой загрузкой и отменой)
 import os
 import asyncio
 import re
 import logging
 import threading
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -36,9 +37,6 @@ os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 
 # Клиент Telegram
 client = TelegramClient('bot_session', API_ID, API_HASH)
-
-# Глобальная блокировка для ограничения параллельных загрузок (опционально)
-download_lock = threading.Lock()
 
 # Отслеживание активных загрузок: user_id -> threading.Event()
 user_downloads = {}
@@ -86,7 +84,9 @@ def download_video_sync(youtube_url: str, cancel_event: threading.Event) -> Opti
     video_id = youtube_url.split('=')[-1] if '=' in youtube_url else youtube_url
     
     ydl_opts = {
-        'format': 'best[height<=360]/best[height<=480]/best',
+        # ИСПРАВЛЕНО: Используем готовый mp4 формат 18 (360p с аудио) 
+        # или лучший mp4 до 360p, без постобработки
+        'format': '18/best[height<=360][ext=mp4]/best[height<=480][ext=mp4]/best[ext=mp4]/best',
         'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
         'quiet': True,
         'no_warnings': True,
@@ -94,6 +94,12 @@ def download_video_sync(youtube_url: str, cancel_event: threading.Event) -> Opti
         'retries': 3,
         'fragment_retries': 3,
         'skip_unavailable_fragments': True,
+        
+        # КРИТИЧНО: Отключаем постобработку и ffmpeg
+        'postprocessors': [],
+        'prefer_ffmpeg': False,
+        'merge_output_format': None,
+        
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         }
@@ -138,6 +144,9 @@ def download_video_sync(youtube_url: str, cancel_event: threading.Event) -> Opti
                 logger.info("🛑 Загрузка отменена (перед скачиванием)")
                 return None
             
+            # Засекаем время скачивания
+            download_start = time.time()
+            
             # Добавляем прогресс-хук с проверкой отмены
             def progress_hook(d):
                 if d['status'] == 'downloading':
@@ -163,6 +172,8 @@ def download_video_sync(youtube_url: str, cancel_event: threading.Event) -> Opti
             try:
                 # Скачиваем
                 info = ydl.extract_info(youtube_url, download=True)
+                download_time = time.time() - download_start
+                logger.info(f"⏱ Скачивание заняло: {download_time:.1f}с")
             except Exception as e:
                 if str(e) == "DOWNLOAD_CANCELLED" or cancel_event.is_set():
                     logger.info("🛑 Скачивание прервано пользователем")
@@ -202,6 +213,8 @@ def download_video_sync(youtube_url: str, cancel_event: threading.Event) -> Opti
                         return None
             
             file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+            
+            logger.info(f"📁 Файл: {os.path.basename(file_path)} | Размер: {file_size_mb:.1f} MB")
             
             return {
                 'title': info.get('title', 'Видео'),
@@ -506,10 +519,11 @@ async def main():
     
     # Информация о конфигурации
     logger.info(f"📁 Папка загрузок: {os.path.abspath(DOWNLOAD_FOLDER)}")
-    logger.info(f"📊 Качество видео: 360p")
+    logger.info(f"📊 Качество видео: 360p (готовый mp4)")
     logger.info(f"📦 Макс. размер: {MAX_FILE_SIZE_MB} MB")
     logger.info(f"⏱ Таймаут загрузки: {DOWNLOAD_TIMEOUT}s")
     logger.info(f"🔧 yt-dlp версия: {yt_dlp.version.__version__}")
+    logger.info(f"⚡ Постобработка отключена для максимальной скорости")
     
     # Проверка прав доступа
     try:
@@ -536,6 +550,7 @@ async def main():
         print(f"  📝 Отправьте ссылку на YouTube видео")
         print(f"  📊 Качество: 360p | ⏱ Таймаут: 10 мин")
         print(f"  🚫 Отмена: /cancel в любой момент")
+        print(f"  ⚡ Быстрая загрузка (готовый mp4)")
         print("=" * 60)
         print()
         
