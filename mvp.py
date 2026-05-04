@@ -107,7 +107,7 @@ def format_value(value, key='', max_length=500):
     if isinstance(value, (list, tuple)):
         if len(value) == 0:
             return None
-        return ', '.join(str(item) for item in value[:10])  # Первые 10 элементов
+        return ', '.join(str(item) for item in value[:10])
     
     if isinstance(value, dict):
         if len(value) == 0:
@@ -128,7 +128,7 @@ def print_all_video_info(info: dict, platform: str):
     """Выводит ВСЮ информацию о видео в консоль без сокращений"""
     console_logger.separator(f"ПОЛНАЯ ИНФОРМАЦИЯ О ВИДЕО ({platform.upper()})")
     
-    # Сначала выводим основные поля в красивом формате
+    # Выводим основные поля
     important_fields = {
         'id': '🆔 ID',
         'title': '🎬 Название',
@@ -180,7 +180,6 @@ def print_all_video_info(info: dict, platform: str):
         'thumbnails': '🖼 Превью (все)',
     }
     
-    # Выводим важные поля в красивом формате
     for field, label in important_fields.items():
         if field in info and info[field] is not None:
             value = info[field]
@@ -213,8 +212,7 @@ def print_all_video_info(info: dict, platform: str):
             elif field == 'description':
                 desc = str(value)
                 logger.info(f"{label}:")
-                # Выводим описание построчно для читаемости
-                for line in desc.split('\n')[:50]:  # Первые 50 строк
+                for line in desc.split('\n')[:50]:
                     if line.strip():
                         logger.info(f"  {line[:200]}")
                 if len(desc.split('\n')) > 50:
@@ -243,7 +241,7 @@ def print_all_video_info(info: dict, platform: str):
                 if formatted:
                     logger.info(f"{label}: {formatted}")
     
-    # Выводим ВСЕ остальные поля, которые не попали в important_fields
+    # Выводим все остальные поля
     console_logger.separator("ДОПОЛНИТЕЛЬНЫЕ ПОЛЯ")
     printed_fields = set(important_fields.keys())
     
@@ -253,7 +251,7 @@ def print_all_video_info(info: dict, platform: str):
             if formatted:
                 logger.info(f"\033[90m{key}:\033[0m {formatted}")
     
-    # Выводим форматы если есть
+    # Выводим форматы
     if 'formats' in info and info['formats']:
         console_logger.separator("ДОСТУПНЫЕ ФОРМАТЫ")
         formats = info['formats']
@@ -290,13 +288,11 @@ def print_all_video_info(info: dict, platform: str):
                     f"{size_str}{tbr_str}"
                 )
     
-    # Выводим субтитры если есть
     if 'subtitles' in info and info['subtitles']:
         console_logger.separator("СУБТИТРЫ")
         for lang, subs in info['subtitles'].items():
             logger.info(f"  {lang}: {len(subs)} дорожек")
     
-    # Выводим automatic_captions если есть
     if 'automatic_captions' in info and info['automatic_captions']:
         console_logger.separator("АВТОМАТИЧЕСКИЕ СУБТИТРЫ")
         for lang, subs in info['automatic_captions'].items():
@@ -305,17 +301,22 @@ def print_all_video_info(info: dict, platform: str):
     console_logger.separator(f"КОНЕЦ ИНФОРМАЦИИ О ВИДЕО ({platform.upper()})")
 
 
+class FormatLogger(yt_dlp.postprocessor.PostProcessor):
+    """Постпроцессор для логирования выбранного формата"""
+    def run(self, info):
+        logger.info(f"📊 ВЫБРАННЫЙ ФОРМАТ: {info.get('format_id', 'unknown')} | "
+                   f"ext: {info.get('ext', '?')} | "
+                   f"resolution: {info.get('resolution', '?')} | "
+                   f"vcodec: {info.get('vcodec', '?')} | "
+                   f"acodec: {info.get('acodec', '?')} | "
+                   f"filesize: {info.get('filesize', 0) / (1024*1024):.1f}MB | "
+                   f"tbr: {info.get('tbr', 0):.0f}kbps")
+        return [], info
+
+
 def download_video_sync(url: str, platform: str, cancel_event: threading.Event) -> Optional[dict]:
     """
     Синхронная функция скачивания видео (запускается в отдельном потоке).
-    
-    Args:
-        url: URL видео
-        platform: 'youtube' или 'tiktok'
-        cancel_event: Событие для отмены загрузки
-    
-    Returns:
-        dict с информацией о видео или None при ошибке/отмене
     """
     if cancel_event.is_set():
         logger.info("🛑 Загрузка отменена до начала")
@@ -329,69 +330,88 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
         'retries': 3,
         'fragment_retries': 3,
         'skip_unavailable_fragments': True,
-        'concurrent_fragment_downloads': 8,  # Многопоточная загрузка фрагментов
-        'buffersize': 1024 * 1024,  # Буфер 1MB для ускорения
-        'http_chunk_size': 10 * 1024 * 1024,  # Чанки по 10MB
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
         }
     }
     
-    # Опции зависят от платформы
     if platform == 'youtube':
-        # Базовые опции для YouTube
-        ydl_opts = {
-            **base_opts,
-            'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
-            'merge_output_format': 'mp4',
-        }
+        # ============================================================
+        # СТРАТЕГИЯ ВЫБОРА ФОРМАТА ДЛЯ YOUTUBE:
+            # 1. Приоритет: готовые mp4 файлы (не требуют склеивания)
+            # 2. Избегаем формата 18 (медленный старый формат)
+        # 3. Используем форматы с AVC кодеком (быстрее)
+        # ============================================================
         
-        # Если aria2 доступен - используем его для максимальной скорости
         if ARIA2_AVAILABLE:
-            logger.info("🚀 Используется aria2c для многопоточной загрузки (8 потоков)")
-            ydl_opts.update({
+            logger.info("🚀 Используется aria2c для многопоточной загрузки")
+            ydl_opts = {
+                **base_opts,
+                'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
+                'merge_output_format': 'mp4',
                 'external_downloader': 'aria2c',
                 'external_downloader_args': [
-                    '-x', '8',      # 8 соединений
-                    '-s', '8',      # 8 потоков
-                    '-k', '1M',     # Размер чанка 1MB
-                    '--max-connection-per-server=8',
+                    '-x', '16',     # 16 соединений
+                    '-s', '16',     # 16 потоков
+                    '-k', '1M',     # Чанки по 1MB
+                    '--max-connection-per-server=16',
                     '--min-split-size=1M',
                     '--file-allocation=none',
                     '--async-dns=true',
                     '--optimize-concurrent-downloads=true',
+                    '--max-tries=5',
+                    '--retry-wait=1',
                 ],
+                # ФОРМАТЫ СТРОГО ПО ПРИОРИТЕТУ:
                 'format': (
-                    # Приоритет: mp4 с видео+аудио до 480p
-                    'best[height<=480][ext=mp4][vcodec^=avc]/'
-                    'best[height<=360][ext=mp4][vcodec^=avc]/'
-                    'best[height<=480][ext=mp4]/'
-                    'best[height<=360][ext=mp4]/'
-                    'best[ext=mp4]/'
-                    'best'
-                ),
-            })
-        else:
-            logger.info("⚡ Используется встроенный загрузчик (оптимизированный)")
-            ydl_opts.update({
-                'format': (
-                    # Выбираем лучший mp4 формат, который уже содержит аудио
-                    'best[height<=480][ext=mp4][vcodec^=avc]/'
-                    'best[height<=360][ext=mp4][vcodec^=avc]/'
-                    'best[height<=480][ext=mp4]/'
-                    'best[height<=360][ext=mp4]/'
-                    'bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/'
+                    # 1. mp4 360p с AVC кодеком (быстрый)
+                    'bestvideo[height<=360][ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/'
+                    # 2. mp4 480p с AVC кодеком
+                    'bestvideo[height<=480][ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/'
+                    # 3. Любой mp4 видео + аудио
                     'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/'
-                    'best[ext=mp4]/'
-                    'best'
+                    # 4. Готовый mp4 (если есть кроме 18)
+                    'best[height<=480][ext=mp4][format_id!=18]/'
+                    # 5. Просто лучший mp4
+                    'best[ext=mp4][format_id!=18]/'
+                    # 6. Всё что угодно кроме 18
+                    'best[format_id!=18]/best'
                 ),
-            })
-    
+            }
+        else:
+            logger.info("⚡ Используется встроенный загрузчик")
+            ydl_opts = {
+                **base_opts,
+                'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
+                'merge_output_format': 'mp4',
+                'concurrent_fragment_downloads': 16,
+                'buffersize': 2 * 1024 * 1024,  # 2MB буфер
+                'http_chunk_size': 20 * 1024 * 1024,  # 20MB чанки
+                # ФОРМАТЫ СТРОГО ПО ПРИОРИТЕТУ (избегаем формат 18):
+                'format': (
+                    # 1. mp4 360p с AVC (быстрый, не требует склеивания если есть аудио)
+                    'best[height<=360][ext=mp4][vcodec^=avc][format_id!=18]/'
+                    # 2. mp4 480p с AVC
+                    'best[height<=480][ext=mp4][vcodec^=avc][format_id!=18]/'
+                    # 3. mp4 видео+аудио раздельно до 360p
+                    'bestvideo[height<=360][ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/'
+                    # 4. mp4 видео+аудио раздельно до 480p
+                    'bestvideo[height<=480][ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/'
+                    # 5. Любой готовый mp4 кроме 18
+                    'best[height<=480][ext=mp4][format_id!=18]/'
+                    # 6. Лучший mp4 кроме 18
+                    'best[ext=mp4][format_id!=18]/'
+                    # 7. Всё кроме 18
+                    'best[format_id!=18]/best'
+                ),
+            }
+        
+        # Добавляем постпроцессор для логирования формата
+        ydl_opts['postprocessors'] = []
+        
     elif platform == 'tiktok':
-        # TikTok обычно отдает готовые mp4, оптимизируем под это
         if ARIA2_AVAILABLE:
-            logger.info("🚀 Используется aria2c для TikTok (4 потока)")
+            logger.info("🚀 Используется aria2c для TikTok")
             ydl_opts = {
                 **base_opts,
                 'format': 'best[ext=mp4]/best',
@@ -401,8 +421,8 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
                 'merge_output_format': None,
                 'external_downloader': 'aria2c',
                 'external_downloader_args': [
-                    '-x', '4',
-                    '-s', '4',
+                    '-x', '8',
+                    '-s', '8',
                     '-k', '1M',
                     '--file-allocation=none',
                 ],
@@ -420,6 +440,7 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
                 'postprocessors': [],
                 'prefer_ffmpeg': False,
                 'merge_output_format': None,
+                'concurrent_fragment_downloads': 8,
                 'extractor_args': {
                     'tiktok': {
                         'api_hostname': 'api16-normal-c-useast1a.tiktokv.com',
@@ -438,11 +459,10 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
         return None
     
     try:
-        # Опции для быстрого получения информации
+        # Опции для получения информации
         info_opts = {
             **ydl_opts,
             'skip_download': True,
-            'no_check_formats': True,  # КРИТИЧНО: ускоряет проверку
             'playlistend': 1,
         }
         
@@ -464,6 +484,22 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
         
         # Показываем ВСЮ информацию о видео
         print_all_video_info(info, platform)
+        
+        # Логируем какой формат БУДЕТ выбран
+        if 'requested_formats' in info:
+            formats = info['requested_formats']
+            logger.info(f"🎯 БУДУТ ЗАГРУЖЕНЫ ФОРМАТЫ:")
+            for f in formats:
+                logger.info(f"  - format_id: {f.get('format_id')}, "
+                          f"ext: {f.get('ext')}, "
+                          f"resolution: {f.get('resolution')}, "
+                          f"vcodec: {f.get('vcodec')}, "
+                          f"acodec: {f.get('acodec')}, "
+                          f"filesize: {f.get('filesize', 0) / (1024*1024):.1f}MB")
+        elif 'format_id' in info:
+            logger.info(f"🎯 БУДЕТ ЗАГРУЖЕН ФОРМАТ: {info.get('format_id')} | "
+                      f"ext: {info.get('ext')} | "
+                      f"filesize: {info.get('filesize', 0) / (1024*1024):.1f}MB")
         
         # Шаг 2: Скачивание
         console_logger.step("Скачивание видео...", current=2, total=3)
@@ -491,6 +527,8 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
                     if str(e) == "DOWNLOAD_CANCELLED":
                         raise
                     pass
+            elif d['status'] == 'finished':
+                logger.info(f"✅ Загрузка завершена: {d.get('filename', 'unknown')}")
         
         ydl_opts['progress_hooks'] = [progress_hook]
         
@@ -498,8 +536,21 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 download_time = time.time() - download_start
-                download_speed = (os.path.getsize(ydl.prepare_filename(info)) / (1024 * 1024)) / download_time if download_time > 0 else 0
-                logger.info(f"⏱ Скачивание заняло: {download_time:.1f}с (скорость: {download_speed:.1f} MB/s)")
+                
+                # Получаем размер файла
+                file_path = ydl.prepare_filename(info)
+                if os.path.exists(file_path):
+                    actual_size = os.path.getsize(file_path) / (1024 * 1024)
+                else:
+                    actual_size = 0
+                
+                download_speed = actual_size / download_time if download_time > 0 else 0
+                logger.info(f"⏱ Скачивание заняло: {download_time:.1f}с "
+                          f"(скорость: {download_speed:.2f} MB/s)")
+                logger.info(f"📊 Загруженный формат: {info.get('format_id', '?')} | "
+                          f"ext: {info.get('ext', '?')} | "
+                          f"vcodec: {info.get('vcodec', '?')} | "
+                          f"acodec: {info.get('acodec', '?')}")
         except Exception as e:
             if str(e) == "DOWNLOAD_CANCELLED" or cancel_event.is_set():
                 logger.info("🛑 Скачивание прервано пользователем")
@@ -508,15 +559,12 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
         
         if cancel_event.is_set():
             logger.info("🛑 Загрузка отменена (после скачивания)")
-            file_path = ydl.prepare_filename(info)
             if os.path.exists(file_path):
                 os.remove(file_path)
             return None
         
         # Шаг 3: Проверка файла
         console_logger.step("Проверка файла...", current=3, total=3)
-        
-        file_path = ydl.prepare_filename(info)
         
         # Ищем файл если расширение не совпало
         if not os.path.exists(file_path):
@@ -540,7 +588,6 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
         
         logger.info(f"📁 Файл: {os.path.basename(file_path)} | Размер: {file_size_mb:.1f} MB")
         
-        # Для TikTok duration может быть float
         duration = info.get('duration', 0)
         if duration:
             duration = int(duration)
@@ -646,7 +693,7 @@ async def help_handler(event):
         "3️⃣ Проверит видео и покажет ВСЮ информацию\n"
         "4️⃣ Начнется загрузка\n"
         "5️⃣ Видео отправится вам с подробным описанием\n\n"
-        f"⚡ **Статус ускорения:** {'🚀 aria2c активирован (8 потоков)' if ARIA2_AVAILABLE else '⚡ Встроенный загрузчик (оптимизирован)'}\n\n"
+        f"⚡ **Статус ускорения:** {'🚀 aria2c активирован (16 потоков)' if ARIA2_AVAILABLE else '⚡ Встроенный загрузчик (оптимизирован)'}\n\n"
         "⚠️ **Важно:**\n"
         "• Загружается только одно видео за раз\n"
         "• Дождитесь окончания текущей загрузки\n"
@@ -686,18 +733,15 @@ async def message_handler(event):
     """Обрабатывает все входящие сообщения"""
     text = event.text.strip() if event.text else ""
     user_id = event.sender_id
-    chat_id = event.chat_id
-    
+    chat_id = event.chat_id    
     if text.startswith('/'):
         return
     
-    # Определяем платформу и очищаем URL
     platform, clean_url = detect_platform(text)
     
     if not platform:
-        return  # Просто игнорируем сообщения без ссылок
+        return
     
-    # Проверяем, нет ли уже активной загрузки
     if user_id in user_downloads and not user_downloads[user_id].is_set():
         await event.reply(
             "⚠️ **У вас уже есть активная загрузка!**\n\n"
@@ -785,7 +829,6 @@ async def message_handler(event):
             chat=chat_id
         )
         
-        # Формируем ПОДРОБНУЮ подпись со всей информацией
         duration = video_info.get('duration', 0)
         if duration > 0:
             minutes, secs = divmod(int(duration), 60)
@@ -825,7 +868,7 @@ async def message_handler(event):
                 caption_parts.append(f"🏷 **Категории:** {', '.join(video_info['categories'])}")
             
             if video_info.get('tags'):
-                tags = video_info['tags'][:5]  # Первые 5 тегов
+                tags = video_info['tags'][:5]
                 caption_parts.append(f"🔖 **Теги:** {', '.join(tags)}")
             
             if video_info.get('upload_date'):
@@ -854,7 +897,7 @@ async def message_handler(event):
                 f"🔗 {video_info['url']}"
             ])
             
-        else:  # TikTok
+        else:
             caption_parts = [f"🎵 **{video_info.get('fulltitle', video_info['title'])}**\n"]
             
             if video_info.get('uploader'):
@@ -888,7 +931,6 @@ async def message_handler(event):
                 f"🔗 {video_info['url']}"
             ])
         
-        # Добавляем описание если есть (обрезаем до 500 символов для Telegram)
         description = video_info.get('description', '')
         if description:
             desc_short = description[:500]
@@ -898,11 +940,9 @@ async def message_handler(event):
         
         caption = '\n'.join(caption_parts)
         
-        # Обрезаем caption если он слишком длинный для Telegram (лимит 1024 символа)
         if len(caption) > 1000:
             caption = caption[:997] + '...'
         
-        # Отправляем файл
         await client.send_file(
             entity=chat_id,
             file=file_path,
@@ -932,7 +972,6 @@ async def message_handler(event):
     except yt_dlp.utils.DownloadError as e:
         error_msg = str(e)
         
-        # Обработка ошибок для разных платформ
         if 'Video unavailable' in error_msg:
             error_text = "❌ **Видео недоступно**\n\n📌 Возможно, оно удалено или является приватным"
         elif 'Private video' in error_msg:
@@ -978,17 +1017,18 @@ async def main():
     console_logger.separator("ЗАПУСК БОТА", char="=")
     
     logger.info(f"📁 Папка загрузок: {os.path.abspath(DOWNLOAD_FOLDER)}")
-    logger.info(f"📺 YouTube: до 480p (оптимизированные форматы)")
+    logger.info(f"📺 YouTube: до 480p (ИСКЛЮЧЕН формат 18)")
     logger.info(f"🎵 TikTok: лучшее качество")
     logger.info(f"📦 Макс. размер: {MAX_FILE_SIZE_MB} MB")
     logger.info(f"⏱ Таймаут загрузки: {DOWNLOAD_TIMEOUT}s")
     logger.info(f"🔧 yt-dlp версия: {yt_dlp.version.__version__}")
     logger.info(f"📋 Вывод ВСЕЙ информации о видео")
+    logger.info(f"🚫 Формат 18 ИСКЛЮЧЕН из выбора (медленный)")
     
     if ARIA2_AVAILABLE:
-        logger.info("🚀 aria2c обнаружен - используется многопоточная загрузка (8 потоков)")
+        logger.info("🚀 aria2c обнаружен - 16 потоков загрузки")
     else:
-        logger.info("⚡ aria2c не найден - используется встроенный загрузчик (оптимизированный)")
+        logger.info("⚡ aria2c не найден - оптимизированный встроенный загрузчик")
         logger.info("💡 Установите aria2 для максимальной скорости: sudo apt install aria2")
     
     try:
@@ -1013,14 +1053,15 @@ async def main():
         print(f"  🤖 БОТ ЗАПУЩЕН: @{me.username}")
         print("=" * 60)
         print(f"  📝 Отправьте ссылку на видео")
-        print(f"  📺 YouTube: до 480p | 🎵 TikTok: лучшее")
+        print(f"  📺 YouTube: до 480p (формат 18 исключен)")
+        print(f"  🎵 TikTok: лучшее")
         print(f"  ⏱ Таймаут: 10 мин")
-        print(f"  🚫 Отмена: /cancel в любой момент")
+        print(f"  🚫 Отмена: /cancel")
         if ARIA2_AVAILABLE:
-            print(f"  🚀 Многопоточная загрузка (aria2c)")
+            print(f"  🚀 16 потоков (aria2c)")
         else:
             print(f"  ⚡ Оптимизированная загрузка")
-        print(f"  📋 Показывает ВСЮ информацию")
+        print(f"  📋 ВСЯ информация о видео")
         print("=" * 60)
         print()
         
