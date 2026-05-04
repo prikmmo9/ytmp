@@ -86,6 +86,212 @@ def detect_platform(url: str) -> Tuple[Optional[str], Optional[str]]:
     return None, None
 
 
+def format_value(value, key='', max_length=500):
+    """Форматирует значение для красивого вывода"""
+    if value is None or value == '':
+        return None
+    
+    if isinstance(value, (list, tuple)):
+        if len(value) == 0:
+            return None
+        return ', '.join(str(item) for item in value[:10])  # Первые 10 элементов
+    
+    if isinstance(value, dict):
+        if len(value) == 0:
+            return None
+        items = []
+        for k, v in list(value.items())[:10]:
+            items.append(f"{k}: {v}")
+        return '\n'.join(items)
+    
+    value_str = str(value)
+    if len(value_str) > max_length:
+        value_str = value_str[:max_length] + '...'
+    
+    return value_str
+
+
+def print_all_video_info(info: dict, platform: str):
+    """Выводит ВСЮ информацию о видео в консоль без сокращений"""
+    console_logger.separator(f"ПОЛНАЯ ИНФОРМАЦИЯ О ВИДЕО ({platform.upper()})")
+    
+    # Сначала выводим основные поля в красивом формате
+    important_fields = {
+        'id': '🆔 ID',
+        'title': '🎬 Название',
+        'fulltitle': '📝 Полное название',
+        'description': '📄 Описание',
+        'uploader': '👤 Автор/Канал',
+        'uploader_id': '🔢 ID автора',
+        'uploader_url': '🔗 URL автора',
+        'channel': '📺 Канал',
+        'channel_id': '🔢 ID канала',
+        'channel_url': '🔗 URL канала',
+        'duration': '⏱ Длительность',
+        'duration_string': '⏱ Длительность (строка)',
+        'view_count': '👁 Просмотры',
+        'like_count': '❤️ Лайки',
+        'comment_count': '💬 Комментарии',
+        'share_count': '🔄 Репосты',
+        'average_rating': '⭐ Рейтинг',
+        'age_limit': '🔞 Возрастное ограничение',
+        'upload_date': '📅 Дата загрузки',
+        'release_date': '📅 Дата релиза',
+        'categories': '🏷 Категории',
+        'tags': '🔖 Теги',
+        'webpage_url': '🌐 URL страницы',
+        'original_url': '🔗 Оригинальный URL',
+        'extractor': '🔧 Экстрактор',
+        'extractor_key': '🔑 Ключ экстрактора',
+        'format': '📊 Формат',
+        'format_id': '🆔 Формата',
+        'ext': '📎 Расширение',
+        'width': '📐 Ширина',
+        'height': '📏 Высота',
+        'resolution': '🖥 Разрешение',
+        'fps': '🎞 FPS',
+        'vcodec': '🎥 Видеокодек',
+        'acodec': '🔊 Аудиокодек',
+        'abr': '📻 Битрейт аудио',
+        'vbr': '🎬 Битрейт видео',
+        'tbr': '📡 Общий битрейт',
+        'filesize': '💾 Размер файла',
+        'filesize_approx': '💾 Примерный размер',
+        'live_status': '🔴 Статус трансляции',
+        'is_live': '🔴 Прямой эфир',
+        'was_live': '🟤 Был в эфире',
+        'playlist': '📋 Плейлист',
+        'playlist_index': '🔢 Индекс в плейлисте',
+        'playlist_count': '📊 Всего в плейлисте',
+        'thumbnail': '🖼 Превью',
+        'thumbnails': '🖼 Превью (все)',
+    }
+    
+    # Выводим важные поля в красивом формате
+    for field, label in important_fields.items():
+        if field in info and info[field] is not None:
+            value = info[field]
+            
+            if field == 'duration' and isinstance(value, (int, float)) and value > 0:
+                minutes, secs = divmod(int(value), 60)
+                hours, minutes = divmod(minutes, 60)
+                if hours > 0:
+                    logger.info(f"{label}: {hours}:{minutes:02d}:{secs:02d} ({value} сек)")
+                else:
+                    logger.info(f"{label}: {minutes}:{secs:02d} ({value} сек)")
+            
+            elif field in ['view_count', 'like_count', 'comment_count', 'share_count']:
+                if isinstance(value, (int, float)) and value > 0:
+                    logger.info(f"{label}: {value:,}")
+                elif value is not None:
+                    logger.info(f"{label}: {value}")
+            
+            elif field in ['filesize', 'filesize_approx']:
+                if isinstance(value, (int, float)) and value > 0:
+                    size_mb = value / (1024 * 1024)
+                    size_gb = size_mb / 1024
+                    if size_gb >= 1:
+                        logger.info(f"{label}: {size_gb:.2f} GB ({size_mb:.2f} MB, {value:,} байт)")
+                    else:
+                        logger.info(f"{label}: {size_mb:.2f} MB ({value:,} байт)")
+                elif value is not None:
+                    logger.info(f"{label}: {value}")
+            
+            elif field == 'description':
+                desc = str(value)
+                logger.info(f"{label}:")
+                # Выводим описание построчно для читаемости
+                for line in desc.split('\n')[:50]:  # Первые 50 строк
+                    if line.strip():
+                        logger.info(f"  {line[:200]}")
+                if len(desc.split('\n')) > 50:
+                    logger.info(f"  ... (еще {len(desc.split('\n')) - 50} строк)")
+            
+            elif field == 'categories' and isinstance(value, list):
+                logger.info(f"{label}: {', '.join(str(c) for c in value)}")
+            
+            elif field == 'tags' and isinstance(value, list):
+                tags_str = ', '.join(str(t) for t in value)
+                if len(tags_str) > 500:
+                    tags_str = tags_str[:500] + '...'
+                logger.info(f"{label}: {tags_str}")
+            
+            elif field == 'thumbnails' and isinstance(value, list):
+                logger.info(f"{label}: {len(value)} шт.")
+                for i, thumb in enumerate(value[:5]):
+                    if isinstance(thumb, dict):
+                        logger.info(f"  [{i}] {thumb.get('url', '')[:150]}")
+            
+            elif field == 'thumbnail' and isinstance(value, str):
+                logger.info(f"{label}: {value[:200]}")
+            
+            else:
+                formatted = format_value(value, field, 500)
+                if formatted:
+                    logger.info(f"{label}: {formatted}")
+    
+    # Выводим ВСЕ остальные поля, которые не попали в important_fields
+    console_logger.separator("ДОПОЛНИТЕЛЬНЫЕ ПОЛЯ")
+    printed_fields = set(important_fields.keys())
+    
+    for key, value in info.items():
+        if key not in printed_fields and value is not None:
+            formatted = format_value(value, key)
+            if formatted:
+                logger.info(f"\033[90m{key}:\033[0m {formatted}")
+    
+    # Выводим форматы если есть
+    if 'formats' in info and info['formats']:
+        console_logger.separator("ДОСТУПНЫЕ ФОРМАТЫ")
+        formats = info['formats']
+        logger.info(f"Всего форматов: {len(formats)}")
+        
+        for i, fmt in enumerate(formats):
+            if isinstance(fmt, dict):
+                fmt_id = fmt.get('format_id', 'N/A')
+                ext = fmt.get('ext', 'N/A')
+                resolution = fmt.get('resolution', 'N/A')
+                fps = fmt.get('fps', 'N/A')
+                vcodec = fmt.get('vcodec', 'N/A')
+                acodec = fmt.get('acodec', 'N/A')
+                filesize = fmt.get('filesize', 0)
+                tbr = fmt.get('tbr', 0)
+                format_note = fmt.get('format_note', '')
+                
+                size_str = ''
+                if filesize and filesize > 0:
+                    size_mb = filesize / (1024 * 1024)
+                    size_str = f" | {size_mb:.1f}MB"
+                
+                tbr_str = ''
+                if tbr and tbr > 0:
+                    tbr_str = f" | {tbr:.0f}kbps"
+                
+                note_str = f" [{format_note}]" if format_note else ""
+                
+                logger.info(
+                    f"  [{i}] \033[36m{fmt_id}\033[0m | "
+                    f"\033[33m{ext}\033[0m | "
+                    f"{resolution}@{fps}fps{note_str} | "
+                    f"v:{vcodec or 'none'} a:{acodec or 'none'}"
+                    f"{size_str}{tbr_str}"
+                )
+    
+    # Выводим субтитры если есть
+    if 'subtitles' in info and info['subtitles']:
+        console_logger.separator("СУБТИТРЫ")
+        for lang, subs in info['subtitles'].items():
+            logger.info(f"  {lang}: {len(subs)} дорожек")
+    
+    # Выводим automatic_captions если есть
+    if 'automatic_captions' in info and info['automatic_captions']:
+        console_logger.separator("АВТОМАТИЧЕСКИЕ СУБТИТРЫ")
+        for lang, subs in info['automatic_captions'].items():
+            logger.info(f"  {lang}: {len(subs)} дорожек")
+    
+    console_logger.separator(f"КОНЕЦ ИНФОРМАЦИИ О ВИДЕО ({platform.upper()})")
+
+
 def download_video_sync(url: str, platform: str, cancel_event: threading.Event) -> Optional[dict]:
     """
     Синхронная функция скачивания видео (запускается в отдельном потоке).
@@ -180,23 +386,8 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
             logger.info("🛑 Загрузка отменена (после получения информации)")
             return None
         
-        # Показываем информацию
-        if platform == 'youtube':
-            console_logger.video_info({
-                'title': info.get('title', 'N/A'),
-                'uploader': info.get('uploader', 'N/A'),
-                'duration': info.get('duration', 0),
-                'view_count': info.get('view_count', 0),
-                'url': url
-            })
-        elif platform == 'tiktok':
-            # Для TikTok своя информация
-            logger.info(f"🎵 Платформа: TikTok")
-            logger.info(f"🎬 Название: {info.get('title', 'N/A')[:60]}")
-            logger.info(f"👤 Автор: {info.get('uploader', 'N/A')}")
-            logger.info(f"⏱ Длительность: {info.get('duration', 0)}с")
-            logger.info(f"❤️ Лайков: {info.get('like_count', 'N/A')}")
-            logger.info(f"💬 Комментариев: {info.get('comment_count', 'N/A')}")
+        # Показываем ВСЮ информацию о видео
+        print_all_video_info(info, platform)
         
         # Шаг 2: Скачивание
         console_logger.step("Скачивание видео...", current=2, total=3)
@@ -279,13 +470,32 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
         
         return {
             'title': info.get('title', 'Видео'),
+            'fulltitle': info.get('fulltitle', info.get('title', 'Видео')),
             'uploader': info.get('uploader') or 'Неизвестный автор',
+            'uploader_id': info.get('uploader_id', ''),
+            'uploader_url': info.get('uploader_url', ''),
+            'channel': info.get('channel', ''),
+            'channel_id': info.get('channel_id', ''),
+            'channel_url': info.get('channel_url', ''),
             'duration': duration,
             'file_path': file_path,
             'file_size_mb': file_size_mb,
             'url': url,
             'platform': platform,
             'description': info.get('description', ''),
+            'view_count': info.get('view_count', 0),
+            'like_count': info.get('like_count', 0),
+            'comment_count': info.get('comment_count', 0),
+            'share_count': info.get('share_count', 0),
+            'categories': info.get('categories', []),
+            'tags': info.get('tags', []),
+            'upload_date': info.get('upload_date', ''),
+            'release_date': info.get('release_date', ''),
+            'age_limit': info.get('age_limit', 0),
+            'average_rating': info.get('average_rating', 0),
+            'live_status': info.get('live_status', ''),
+            'is_live': info.get('is_live', False),
+            'was_live': info.get('was_live', False),
         }
             
     except yt_dlp.utils.DownloadError as e:
@@ -322,7 +532,8 @@ async def start_handler(event):
         "Я - Media Download Bot! 🤖\n\n"
         "**Что я умею:**\n"
         "• Скачиваю видео с **YouTube** в качестве 360p\n"
-        "• Скачиваю видео с **TikTok** в лучшем качестве\n\n"
+        "• Скачиваю видео с **TikTok** в лучшем качестве\n"
+        "• Показываю ВСЮ информацию о видео!\n\n"
         "**Как использовать:**\n"
         "Просто отправь мне ссылку на видео!\n\n"
         "**Поддерживаемые платформы:**\n"
@@ -354,9 +565,9 @@ async def help_handler(event):
         "📖 **Справка по использованию**\n\n"
         "1️⃣ Отправьте ссылку на видео\n"
         "2️⃣ Бот определит платформу автоматически\n"
-        "3️⃣ Проверит видео и покажет информацию\n"
+        "3️⃣ Проверит видео и покажет ВСЮ информацию\n"
         "4️⃣ Начнется загрузка\n"
-        "5️⃣ Видео отправится вам\n\n"
+        "5️⃣ Видео отправится вам с подробным описанием\n\n"
         "⚠️ **Важно:**\n"
         "• Загружается только одно видео за раз\n"
         "• Дождитесь окончания текущей загрузки\n"
@@ -429,7 +640,7 @@ async def message_handler(event):
     status_msg = await event.reply(
         f"{platform_emoji} **Начинаю загрузку видео...**\n"
         f"🌐 Платформа: **{platform_name}**\n"
-        "🔍 Проверяю доступность...\n"
+        "🔍 Получаю полную информацию...\n"
         "⏳ Пожалуйста, подождите... (отмена: /cancel)"
     )
     
@@ -483,7 +694,7 @@ async def message_handler(event):
         
         await status_msg.edit(
             f"✅ **Видео скачано!** ({file_size_mb:.1f} MB)\n"
-            f"📤 Отправляю вам файл..."
+            f"📤 Отправляю вам файл с подробной информацией..."
         )
         
         console_logger.start_operation(
@@ -492,34 +703,122 @@ async def message_handler(event):
             chat=chat_id
         )
         
-        # Формируем подпись в зависимости от платформы
+        # Формируем ПОДРОБНУЮ подпись со всей информацией
         duration = video_info.get('duration', 0)
-        if platform == 'youtube' and duration > 0:
+        if duration > 0:
             minutes, secs = divmod(int(duration), 60)
-            duration_str = f"{minutes}:{secs:02d}"
-        elif duration > 0:
-            duration_str = f"{int(duration)}с"
+            hours, minutes = divmod(minutes, 60)
+            if hours > 0:
+                duration_str = f"{hours}:{minutes:02d}:{secs:02d}"
+            else:
+                duration_str = f"{minutes}:{secs:02d}"
         else:
             duration_str = "Неизвестно"
         
         if platform == 'youtube':
-            caption = (
-                f"📺 **{video_info['title']}**\n\n"
-                f"👤 **Канал:** {video_info['uploader']}\n"
-                f"⏱ **Длительность:** {duration_str}\n"
-                f"💾 **Размер:** {file_size_mb:.1f} MB\n"
-                f"📊 **Качество:** 360p\n"
+            caption_parts = [f"📺 **{video_info.get('fulltitle', video_info['title'])}**\n"]
+            
+            if video_info.get('channel'):
+                caption_parts.append(f"📺 **Канал:** {video_info['channel']}")
+            elif video_info.get('uploader'):
+                caption_parts.append(f"👤 **Автор:** {video_info['uploader']}")
+            
+            if video_info.get('channel_url'):
+                caption_parts.append(f"🔗 **URL канала:** {video_info['channel_url']}")
+            elif video_info.get('uploader_url'):
+                caption_parts.append(f"🔗 **URL автора:** {video_info['uploader_url']}")
+            
+            caption_parts.append(f"⏱ **Длительность:** {duration_str}")
+            
+            if video_info.get('view_count'):
+                caption_parts.append(f"👁 **Просмотров:** {video_info['view_count']:,}")
+            
+            if video_info.get('like_count'):
+                caption_parts.append(f"👍 **Лайков:** {video_info['like_count']:,}")
+            
+            if video_info.get('comment_count'):
+                caption_parts.append(f"💬 **Комментариев:** {video_info['comment_count']:,}")
+            
+            if video_info.get('categories'):
+                caption_parts.append(f"🏷 **Категории:** {', '.join(video_info['categories'])}")
+            
+            if video_info.get('tags'):
+                tags = video_info['tags'][:5]  # Первые 5 тегов
+                caption_parts.append(f"🔖 **Теги:** {', '.join(tags)}")
+            
+            if video_info.get('upload_date'):
+                date = video_info['upload_date']
+                formatted_date = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
+                caption_parts.append(f"📅 **Дата загрузки:** {formatted_date}")
+            
+            if video_info.get('age_limit', 0) > 0:
+                caption_parts.append(f"🔞 **Возрастное ограничение:** {video_info['age_limit']}+")
+            
+            if video_info.get('average_rating'):
+                caption_parts.append(f"⭐ **Рейтинг:** {video_info['average_rating']}/5")
+            
+            if video_info.get('live_status'):
+                status_map = {
+                    'is_live': '🔴 В эфире',
+                    'is_upcoming': '🟡 Предстоит',
+                    'was_live': '🟤 Завершен',
+                    'not_live': '⚪ Не трансляция'
+                }
+                caption_parts.append(f"🔴 **Статус:** {status_map.get(video_info['live_status'], video_info['live_status'])}")
+            
+            caption_parts.extend([
+                f"💾 **Размер:** {file_size_mb:.1f} MB",
+                f"📊 **Качество:** 360p (YouTube)",
                 f"🔗 {video_info['url']}"
-            )
+            ])
+            
         else:  # TikTok
-            caption = (
-                f"🎵 **{video_info['title']}**\n\n"
-                f"👤 **Автор:** @{video_info['uploader']}\n"
-                f"⏱ **Длительность:** {duration_str}\n"
-                f"💾 **Размер:** {file_size_mb:.1f} MB\n"
-                f"🌐 **Платформа:** TikTok\n"
+            caption_parts = [f"🎵 **{video_info.get('fulltitle', video_info['title'])}**\n"]
+            
+            if video_info.get('uploader'):
+                caption_parts.append(f"👤 **Автор:** @{video_info['uploader']}")
+            
+            if video_info.get('uploader_url'):
+                caption_parts.append(f"🔗 **Профиль:** {video_info['uploader_url']}")
+            
+            caption_parts.append(f"⏱ **Длительность:** {duration_str}")
+            
+            if video_info.get('view_count'):
+                caption_parts.append(f"👁 **Просмотров:** {video_info['view_count']:,}")
+            
+            if video_info.get('like_count'):
+                caption_parts.append(f"❤️ **Лайков:** {video_info['like_count']:,}")
+            
+            if video_info.get('comment_count'):
+                caption_parts.append(f"💬 **Комментариев:** {video_info['comment_count']:,}")
+            
+            if video_info.get('share_count'):
+                caption_parts.append(f"🔄 **Репостов:** {video_info['share_count']:,}")
+            
+            if video_info.get('upload_date'):
+                date = video_info['upload_date']
+                formatted_date = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
+                caption_parts.append(f"📅 **Дата загрузки:** {formatted_date}")
+            
+            caption_parts.extend([
+                f"💾 **Размер:** {file_size_mb:.1f} MB",
+                f"🌐 **Платформа:** TikTok",
                 f"🔗 {video_info['url']}"
-            )
+            ])
+        
+        # Добавляем описание если есть (обрезаем до 500 символов для Telegram)
+        description = video_info.get('description', '')
+        if description:
+            desc_short = description[:500]
+            if len(description) > 500:
+                desc_short += '...'
+            caption_parts.append(f"\n📝 **Описание:**\n{desc_short}")
+        
+        caption = '\n'.join(caption_parts)
+        
+        # Обрезаем caption если он слишком длинный для Telegram (лимит 1024 символа)
+        if len(caption) > 1000:
+            caption = caption[:997] + '...'
         
         # Отправляем файл
         await client.send_file(
@@ -603,6 +902,7 @@ async def main():
     logger.info(f"⏱ Таймаут загрузки: {DOWNLOAD_TIMEOUT}s")
     logger.info(f"🔧 yt-dlp версия: {yt_dlp.version.__version__}")
     logger.info(f"⚡ Быстрая загрузка (без постобработки)")
+    logger.info(f"📋 Вывод ВСЕЙ информации о видео")
     
     try:
         test_file = os.path.join(DOWNLOAD_FOLDER, '.write_test')
@@ -630,6 +930,7 @@ async def main():
         print(f"  ⏱ Таймаут: 10 мин")
         print(f"  🚫 Отмена: /cancel в любой момент")
         print(f"  ⚡ Быстрая загрузка")
+        print(f"  📋 Показывает ВСЮ информацию")
         print("=" * 60)
         print()
         
