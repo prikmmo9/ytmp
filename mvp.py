@@ -1,26 +1,25 @@
-# youtube_bot_mvp.py (только консольное логирование)
+# youtube_bot_mvp.py (исправленная версия с блокировкой и таймаутом)
 import os
 import asyncio
 import re
 import logging
+import threading
 from datetime import datetime
 
 import yt_dlp
 from telethon import TelegramClient, events
-
 from logger_config import create_logger
 
 # ============================================================
 # КОНФИГУРАЦИЯ
 # ============================================================
-
-
 API_ID = int(os.getenv('API_ID', '22268845'))
 API_HASH = os.getenv('API_HASH', 'ffbeffdfb86784e12b39aea5f53857d2')
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8566350925:AAEOwpPgXhmR3SE_7TapSbzMJnqImnMA-Js')
 
 DOWNLOAD_FOLDER = 'downloads'
 MAX_FILE_SIZE_MB = 2000
+DOWNLOAD_TIMEOUT = 600  # 10 минут на скачивание
 
 # Создаем консольный логгер
 console_logger = create_logger(
@@ -37,13 +36,17 @@ os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 # Клиент Telegram
 client = TelegramClient('bot_session', API_ID, API_HASH)
 
+# Блокировка для предотвращения одновременных загрузок
+download_lock = threading.Lock()
+user_downloading = {}  # Отслеживание активных загрузок пользователей
+
 
 # ============================================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ============================================================
 
 def clean_youtube_url(url: str) -> str | None:
-    """Очищает YouTube URL"""
+    """Очищает YouTube URL от лишних параметров."""
     patterns = [
         r'(?:https?://)?(?:www\.)?youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})',
         r'(?:https?://)?(?:www\.)?youtu\.be/([a-zA-Z0-9_-]{11})',
@@ -61,261 +64,420 @@ def clean_youtube_url(url: str) -> str | None:
     return None
 
 
-async def download_youtube_video(youtube_url: str, user_id: int) -> dict | None:
+def download_video_sync(youtube_url: str) -> dict | None:
     """
-    Скачивает YouTube видео в качестве 360p.
+    Синхронная функция скачивания видео (запускается в отдельном потоке).
     """
-    
-    # Начало операции
-    console_logger.start_operation(
-        "Скачивание видео",
-        url=youtube_url.split('=')[-1],
-        user_id=user_id
-    )
+    video_id = youtube_url.split('=')[-1] if '=' in youtube_url else youtube_url
     
     ydl_opts = {
         'format': 'best[height<=360]/best[height<=480]/best',
         'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
         'quiet': True,
         'no_warnings': True,
-        'socket_timeout': 120,
-        'retries': 10,
-        'fragment_retries': 10,
+        'socket_timeout': 30,  # Таймаут на сокет
+        'retries': 5,
+        'fragment_retries': 5,
         'skip_unavailable_fragments': True,
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         }
     }
     
+    # Шаг 1: Получение информации
+    console_logger.step("Получение информации о видео...", current=1, total=3)
+    
     try:
-        def sync_download():
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                # Шаг 1: Получаем информацию
-                console_logger.step("Получение информации о видео...", current=1, total=4)
-                
-                info = ydl.extract_info(youtube_url, download=False)
-                
-                # Выводим информацию о видео
-                console_logger.video_info({
-                    'title': info.get('title', 'N/A'),
-                    'uploader': info.get('uploader', 'N/A'),
-                    'duration': info.get('duration', 0),
-                    'view_count': info.get('view_count', 0),
-                    'url': youtube_url
-                })
-                
-                # Шаг 2: Проверяем размер
-                console_logger.step("Проверка размера видео...", current=2, total=4)
-                
-                formats = info.get('formats', [])
-                for fmt in formats:
-                    height = fmt.get('height', 0) or 0
-                    if height <= 360 and fmt.get('filesize'):
-                        size_mb = fmt.get('filesize', 0) / (1024 * 1024)
-                        console_logger.step(f"Ожидаемый размер: {size_mb:.1f} MB")
-                        
-                        if size_mb > MAX_FILE_SIZE_MB:
-                            logger.warning(f"⚠️ Видео слишком большое: {size_mb:.1f} MB")
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Сначала получаем информацию без скачивания
+            info = ydl.extract_info(youtube_url, download=False)
+            
+            if not info:
+                logger.error("Не удалось получить информацию о видео")
+                return None
+            
+            # Показываем информацию
+            console_logger.video_info({
+                'title': info.get('title', 'N/A'),
+                'uploader': info.get('uploader', 'N/A'),
+                'duration': info.get('duration', 0),
+                'view_count': info.get('view_count', 0),
+                'url': youtube_url
+            })
+            
+            # Шаг 2: Скачивание
+            console_logger.step("Скачивание видео...", current=2, total=3)
+            
+            # Добавляем прогресс-хук
+            def progress_hook(d):
+                if d['status'] == 'downloading':
+                    try:
+                        percent_str = d.get('_percent_str', '0%').strip().replace('%', '')
+                        percent = float(percent_str) if percent_str else 0
+                        speed = d.get('_speed_str', '')
+                        eta = d.get('_eta_str', '')
+                        console_logger.download_progress(percent, speed=speed, eta=eta)
+                    except:
+                        pass
+            
+            ydl_opts['progress_hooks'] = [progress_hook]
+            
+            # Скачиваем
+            info = ydl.extract_info(youtube_url, download=True)
+            file_path = ydl.prepare_filename(info)
+            
+            # Шаг 3: Проверка
+            console_logger.step("Проверка файла...", current=3, total=3)
+            
+            # Ищем файл если расширение не совпало
+            if not os.path.exists(file_path):
+                base = os.path.splitext(file_path)[0]
+                for ext in ['.mp4', '.webm', '.mkv', '.flv']:
+                    alt_path = base + ext
+                    if os.path.exists(alt_path):
+                        file_path = alt_path
                         break
-                
-                # Шаг 3: Скачиваем
-                console_logger.step("Начало загрузки...", current=3, total=4)
-                
-                # Прогресс-хук
-                def progress_hook(d):
-                    if d['status'] == 'downloading':
-                        try:
-                            percent_str = d.get('_percent_str', '0%').strip().replace('%', '')
-                            percent = float(percent_str)
-                            speed = d.get('_speed_str', 'N/A')
-                            eta = d.get('_eta_str', 'N/A')
-                            console_logger.download_progress(
-                                percent,
-                                speed=speed,
-                                eta=eta
-                            )
-                        except:
-                            pass
-                
-                ydl_opts['progress_hooks'] = [progress_hook]
-                
-                info = ydl.extract_info(youtube_url, download=True)
-                file_path = ydl.prepare_filename(info)
-                
-                # Шаг 4: Проверяем файл
-                console_logger.step("Проверка скачанного файла...", current=4, total=4)
-                
-                if not os.path.exists(file_path):
-                    base = os.path.splitext(file_path)[0]
-                    for ext in ['.mp4', '.webm', '.mkv', '.flv']:
-                        alt_path = base + ext
-                        if os.path.exists(alt_path):
-                            file_path = alt_path
-                            break
-                
-                return info, file_path
-        
-        loop = asyncio.get_event_loop()
-        info, file_path = await loop.run_in_executor(None, sync_download)
-        
-        file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-        
-        console_logger.end_operation(
-            "Скачивание видео",
-            success=True,
-            size=f"{file_size_mb:.1f} MB",
-            file=os.path.basename(file_path)
-        )
-        
-        return {
-            'title': info.get('title', 'Видео'),
-            'uploader': info.get('uploader', 'Неизвестный'),
-            'duration': info.get('duration', 0),
-            'file_path': file_path,
-            'file_size_mb': file_size_mb,
-            'url': youtube_url
-        }
-        
+                else:
+                    import glob
+                    pattern = f"{DOWNLOAD_FOLDER}/*{info.get('id', '')}*"
+                    possible = glob.glob(pattern)
+                    if possible:
+                        file_path = possible[0]
+                    else:
+                        logger.error(f"Файл не найден: {file_path}")
+                        return None
+            
+            file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+            
+            return {
+                'title': info.get('title', 'Видео'),
+                'uploader': info.get('uploader', 'Неизвестный канал'),
+                'duration': info.get('duration', 0),
+                'file_path': file_path,
+                'file_size_mb': file_size_mb,
+                'url': youtube_url
+            }
+            
+    except yt_dlp.utils.DownloadError as e:
+        error_msg = str(e)
+        logger.error(f"yt-dlp error: {error_msg[:200]}")
+        raise
     except Exception as e:
-        console_logger.end_operation(
-            "Скачивание видео",
-            success=False,
-            error=str(e)[:100]
-        )
-        console_logger.error_details(e, "при скачивании видео")
+        logger.error(f"Ошибка при скачивании: {str(e)[:200]}")
         raise
 
 
 # ============================================================
-# ОБРАБОТЧИКИ
+# ОБРАБОТЧИКИ КОМАНД
 # ============================================================
 
 @client.on(events.NewMessage(pattern='/start'))
 async def start_handler(event):
-    """Приветствие"""
-    logger.info(f"📱 /start от пользователя {event.sender_id}")
+    """Обработчик команды /start"""
+    user_id = event.sender_id
     
-    await event.reply(
-        "🎬 **YouTube Download Bot**\n\n"
-        "Отправь мне ссылку на YouTube видео, "
-        "и я скачаю его в качестве 360p!\n\n"
+    try:
+        sender = await event.get_sender()
+        user_name = sender.first_name or f"User {user_id}"
+    except:
+        user_name = f"User {user_id}"
+    
+    logger.info(f"📱 /start от {user_name} (ID: {user_id})")
+    
+    welcome = (
+        f"🎬 **Привет, {user_name}!**\n\n"
+        "Я - YouTube Download Bot! 🤖\n\n"
+        "**Что я умею:**\n"
+        "• Скачиваю видео с YouTube в качестве 360p\n"
+        "• Принимаю разные форматы ссылок\n\n"
+        "**Как использовать:**\n"
+        "Просто отправь мне ссылку на YouTube видео!\n\n"
         "**Поддерживаемые форматы:**\n"
-        "• `youtube.com/watch?v=...`\n"
-        "• `youtu.be/...`\n"
-        "• `youtube.com/shorts/...`\n"
-        "• Просто ID видео (11 символов)"
+        "• `https://youtube.com/watch?v=VIDEO_ID`\n"
+        "• `https://youtu.be/VIDEO_ID`\n"
+        "• `https://youtube.com/shorts/VIDEO_ID`\n"
+        "• Просто `VIDEO_ID` (11 символов)\n\n"
+        "**Ограничения:**\n"
+        "• Макс. размер: 2GB\n"
+        "• Только открытые видео\n"
+        "• По одной загрузке за раз\n\n"
+        "📊 Качество: 360p | 📦 Макс. размер: 2GB"
     )
+    
+    await event.reply(welcome)
 
+
+@client.on(events.NewMessage(pattern='/help'))
+async def help_handler(event):
+    """Обработчик команды /help"""
+    logger.info(f"📖 /help от пользователя {event.sender_id}")
+    
+    help_text = (
+        "📖 **Справка по использованию**\n\n"
+        "1️⃣ Отправьте ссылку на YouTube видео\n"
+        "2️⃣ Бот проверит видео и покажет информацию\n"
+        "3️⃣ Начнется загрузка в качестве 360p\n"
+        "4️⃣ После загрузки видео отправится вам\n\n"
+        "⚠️ **Важно:**\n"
+        "• Загружается только одно видео за раз\n"
+        "• Дождитесь окончания текущей загрузки\n"
+        "• Не отправляйте новую ссылку пока идет загрузка\n\n"
+        "**Команды:**\n"
+        "/start - Главное меню\n"
+        "/help - Эта справка\n"
+        "/cancel - Отменить текущую загрузку"
+    )
+    
+    await event.reply(help_text)
+
+
+@client.on(events.NewMessage(pattern='/cancel'))
+async def cancel_handler(event):
+    """Отмена текущей загрузки"""
+    user_id = event.sender_id
+    
+    if user_id in user_downloading:
+        user_downloading[user_id] = False
+        await event.reply("🛑 **Загрузка отменена**")
+        logger.info(f"🛑 Пользователь {user_id} отменил загрузку")
+    else:
+        await event.reply("ℹ️ У вас нет активных загрузок")
+
+
+# ============================================================
+# ОСНОВНОЙ ОБРАБОТЧИК СООБЩЕНИЙ
+# ============================================================
 
 @client.on(events.NewMessage)
 async def message_handler(event):
-    """Обработка сообщений"""
+    """Обрабатывает все входящие сообщения"""
     text = event.text.strip() if event.text else ""
     user_id = event.sender_id
     chat_id = event.chat_id
     
+    # Пропускаем команды
     if text.startswith('/'):
         return
     
+    # Пытаемся найти YouTube ссылку
     youtube_url = clean_youtube_url(text)
     
     if not youtube_url:
         return
     
+    # Проверяем, нет ли уже активной загрузки
+    if user_id in user_downloading and user_downloading[user_id]:
+        await event.reply(
+            "⚠️ **У вас уже есть активная загрузка!**\n\n"
+            "Дождитесь её завершения или отмените командой /cancel"
+        )
+        logger.warning(f"⚠️ Пользователь {user_id} пытается начать новую загрузку")
+        return
+    
     console_logger.separator(f"НОВЫЙ ЗАПРОС от {user_id}")
     logger.info(f"🔗 YouTube URL: {youtube_url}")
     
-    status_msg = await event.reply("⏬ Начинаю загрузку...")
+    # Устанавливаем флаг загрузки
+    user_downloading[user_id] = True
+    
+    # Отправляем сообщение о начале
+    status_msg = await event.reply(
+        "⏬ **Начинаю загрузку видео...**\n"
+        "🔍 Проверяю доступность видео...\n"
+        "⏳ Пожалуйста, подождите..."
+    )
+    
+    start_time = datetime.now()
     
     try:
-        video_info = await download_youtube_video(youtube_url, user_id)
+        # Запускаем скачивание в отдельном потоке с таймаутом
+        loop = asyncio.get_event_loop()
+        
+        # Создаем задачу с таймаутом
+        download_task = loop.run_in_executor(None, download_video_sync, youtube_url)
+        
+        try:
+            video_info = await asyncio.wait_for(
+                download_task,
+                timeout=DOWNLOAD_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            await status_msg.edit(
+                "⏰ **Превышено время ожидания**\n\n"
+                "Загрузка заняла более 10 минут и была отменена.\n"
+                "Попробуйте другое видео или проверьте скорость интернета."
+            )
+            logger.error(f"⏰ Таймаут загрузки для {youtube_url}")
+            return
         
         if not video_info:
-            await status_msg.edit("❌ Не удалось скачать видео")
+            await status_msg.edit(
+                "❌ **Не удалось скачать видео**\n\n"
+                "Возможные причины:\n"
+                "• Видео недоступно\n"
+                "• Неверная ссылка\n"
+                "• Проблемы с сетью"
+            )
             return
         
-        # Отправка
-        console_logger.start_operation(
-            "Отправка видео",
-            size=f"{video_info['file_size_mb']:.1f} MB",
-            chat_id=chat_id
+        file_path = video_info['file_path']
+        file_size_mb = video_info['file_size_mb']
+        
+        # Проверяем размер
+        if file_size_mb > MAX_FILE_SIZE_MB:
+            await status_msg.edit(
+                f"❌ **Файл слишком большой для Telegram**\n\n"
+                f"📊 Размер: **{file_size_mb:.1f} MB**\n"
+                f"🚫 Лимит: **{MAX_FILE_SIZE_MB} MB**\n\n"
+                f"💡 Попробуйте найти это видео в более низком качестве"
+            )
+            os.remove(file_path)
+            return
+        
+        # Обновляем статус
+        await status_msg.edit(
+            f"✅ **Видео скачано!** ({file_size_mb:.1f} MB)\n"
+            f"📤 Отправляю вам файл..."
         )
         
-        if video_info['file_size_mb'] > MAX_FILE_SIZE_MB:
-            await status_msg.edit(
-                f"❌ Файл слишком большой: {video_info['file_size_mb']:.1f} MB\n"
-                f"Лимит Telegram: {MAX_FILE_SIZE_MB} MB"
-            )
-            os.remove(video_info['file_path'])
-            return
+        # Отправляем видео
+        console_logger.start_operation(
+            "Отправка видео",
+            size=f"{file_size_mb:.1f} MB",
+            chat=chat_id
+        )
+        
+        # Формируем подпись
+        minutes, secs = divmod(int(video_info['duration']), 60)
+        duration_str = f"{minutes}:{secs:02d}" if video_info['duration'] > 0 else "Неизвестно"
         
         caption = (
-            f"🎬 **{video_info['title']}**\n"
-            f"👤 {video_info['uploader']} | "
-            f"💾 {video_info['file_size_mb']:.1f} MB | "
-            f"📊 360p\n"
+            f"🎬 **{video_info['title']}**\n\n"
+            f"👤 **Канал:** {video_info['uploader']}\n"
+            f"⏱ **Длительность:** {duration_str}\n"
+            f"💾 **Размер:** {file_size_mb:.1f} MB\n"
+            f"📊 **Качество:** 360p\n"
             f"🔗 {video_info['url']}"
         )
         
-        await status_msg.edit("📤 Отправляю файл...")
-        
+        # Отправляем файл
         await client.send_file(
             entity=chat_id,
-            file=video_info['file_path'],
+            file=file_path,
             caption=caption,
             supports_streaming=True
         )
         
+        upload_time = (datetime.now() - start_time).total_seconds()
+        
         console_logger.end_operation("Отправка видео", success=True)
         
+        # Удаляем статусное сообщение
         await status_msg.delete()
+        
+        logger.info(
+            f"✅ УСПЕШНО: {video_info['title'][:50]}... | "
+            f"Размер: {file_size_mb:.1f}MB | "
+            f"Время: {upload_time:.1f}s"
+        )
         
         # Удаляем файл
         try:
-            os.remove(video_info['file_path'])
-            logger.debug(f"🗑️ Файл удален: {video_info['file_path']}")
+            os.remove(file_path)
         except:
             pass
         
     except yt_dlp.utils.DownloadError as e:
         error_msg = str(e)
         
-        error_text = "❌ **Ошибка при скачивании**\n\n"
         if 'Video unavailable' in error_msg:
-            error_text += "📌 Видео недоступно"
+            error_text = "❌ **Видео недоступно**\n\n📌 Возможно, оно удалено или является приватным"
         elif 'Private video' in error_msg:
-            error_text += "🔒 Приватное видео"
+            error_text = "❌ **Приватное видео**\n\n🔒 Доступно только по приглашению"
+        elif 'Copyright' in error_msg or 'blocked' in error_msg.lower():
+            error_text = "❌ **Видео заблокировано**\n\n©️ Заблокировано правообладателем"
         elif 'age' in error_msg.lower():
-            error_text += "🔞 Возрастное ограничение"
+            error_text = "❌ **Возрастное ограничение**\n\n🔞 Требуется подтверждение возраста"
         else:
-            error_text += f"```{error_msg[:200]}```"
+            error_text = f"❌ **Ошибка при скачивании**\n\n```{error_msg[:200]}```"
         
         await status_msg.edit(error_text)
+        logger.error(f"❌ ОШИБКА: {error_msg[:100]}...")
         
     except Exception as e:
-        logger.error(f"💥 Неожиданная ошибка: {str(e)[:200]}")
-        await status_msg.edit(f"❌ Ошибка: {str(e)[:200]}")
+        logger.error(f"💥 НЕОЖИДАННАЯ ОШИБКА: {str(e)[:200]}")
+        await status_msg.edit(f"❌ **Произошла ошибка**\n\n```{str(e)[:200]}```")
+    
+    finally:
+        # Снимаем флаг загрузки
+        user_downloading[user_id] = False
 
 
 # ============================================================
-# ЗАПУСК
+# ЗАПУСК БОТА
 # ============================================================
 
 async def main():
-    console_logger.separator("ЗАПУСК БОТА")
-    logger.info(f"📁 Папка загрузок: {DOWNLOAD_FOLDER}")
-    logger.info(f"📊 Качество: 360p")
+    """Главная функция"""
+    
+    console_logger.separator("ЗАПУСК БОТА", char="=")
+    
+    # Информация о конфигурации
+    logger.info(f"📁 Папка загрузок: {os.path.abspath(DOWNLOAD_FOLDER)}")
+    logger.info(f"📊 Качество видео: 360p")
     logger.info(f"📦 Макс. размер: {MAX_FILE_SIZE_MB} MB")
+    logger.info(f"⏱ Таймаут загрузки: {DOWNLOAD_TIMEOUT}s")
+    logger.info(f"🔧 yt-dlp версия: {yt_dlp.version.__version__}")
+    
+    # Проверка прав доступа
+    try:
+        test_file = os.path.join(DOWNLOAD_FOLDER, '.write_test')
+        with open(test_file, 'w') as f:
+            f.write('test')
+        os.remove(test_file)
+        logger.info("✅ Права на запись: OK")
+    except Exception as e:
+        logger.error(f"❌ Ошибка прав доступа: {e}")
+    
     console_logger.separator()
     
-    await client.start(bot_token=BOT_TOKEN)
-    me = await client.get_me()
-    
-    print(f"\n✅ Бот @{me.username} запущен!")
-    print("📝 Отправь ссылку на YouTube видео\n")
-    
-    await client.run_until_disconnected()
+    try:
+        await client.start(bot_token=BOT_TOKEN)
+        me = await client.get_me()
+        
+        logger.info(f"✅ Бот запущен: @{me.username} (ID: {me.id})")
+        
+        print()
+        print("=" * 60)
+        print(f"  🤖 БОТ ЗАПУЩЕН: @{me.username}")
+        print("=" * 60)
+        print(f"  📝 Отправьте ссылку на YouTube видео")
+        print(f"  📊 Качество: 360p | ⏱ Таймаут: 10 мин")
+        print(f"  🚫 Одновременных загрузок: 1 на пользователя")
+        print("=" * 60)
+        print()
+        
+        await client.run_until_disconnected()
+        
+    except KeyboardInterrupt:
+        logger.info("👋 Бот остановлен пользователем")
+        print("\n👋 До свидания!")
+    except Exception as e:
+        logger.critical(f"💥 Критическая ошибка: {e}", exc_info=True)
+        raise
+    finally:
+        if client.is_connected():
+            await client.disconnect()
+        logger.info("🛑 Бот завершил работу")
 
 
 if __name__ == '__main__':
+    try:
+        import yt_dlp
+        import telethon
+    except ImportError as e:
+        print(f"❌ Отсутствуют зависимости: {e}")
+        print("📦 Установите: pip install yt-dlp telethon")
+        exit(1)
+    
     client.loop.run_until_complete(main())
