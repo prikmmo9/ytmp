@@ -16,12 +16,12 @@ from logger_config import create_logger
 # КОНФИГУРАЦИЯ
 # ============================================================
 API_ID = int(os.getenv('API_ID', '22268845'))
-API_HASH = os.getenv('API_HASH', 'ffbeffdfb86784e12b39aea5f53857d2')
+API_HASH = os.getenv('API_HASH', 'ffbeffdfb86784e12b39aea5f53857d2'))
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8566350925:AAEOwpPgXhmR3SE_7TapSbzMJnqImnMA-Js')
 
 DOWNLOAD_FOLDER = 'downloads'
 MAX_FILE_SIZE_MB = 2000
-DOWNLOAD_TIMEOUT = 600  # 10 минут на скачивание
+DOWNLOAD_TIMEOUT = 1800  # 30 минут на скачивание
 
 # Создаем консольный логгер
 console_logger = create_logger(
@@ -106,10 +106,12 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
     base_opts = {
         'quiet': True,
         'no_warnings': True,
-        'socket_timeout': 30,
-        'retries': 3,
-        'fragment_retries': 3,
+        'socket_timeout': 60,  # Увеличено с 30
+        'retries': 5,  # Увеличено с 3
+        'fragment_retries': 5,  # Увеличено с 3
         'skip_unavailable_fragments': True,
+        'concurrent_fragment_downloads': 4,  # Параллельная загрузка
+        'buffersize': 16384,  # Увеличенный буфер
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         }
@@ -119,8 +121,8 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
     if platform == 'youtube':
         ydl_opts = {
             **base_opts,
-            # Для YouTube: готовый mp4 формат 18 (360p с аудио)
-            'format': '18/best[height<=360][ext=mp4]/best[height<=480][ext=mp4]/best[ext=mp4]/best',
+            # Для YouTube: выбираем формат оптимального размера
+            'format': 'best[height<=360][ext=mp4]/best[height<=480][ext=mp4]/best[ext=mp4]/best',
             'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
             # Скачиваем превью как отдельный файл
             'writethumbnail': True,
@@ -192,6 +194,12 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
                 'view_count': info.get('view_count', 0),
                 'url': url
             })
+            
+            # Предупреждаем о длинных видео
+            duration = info.get('duration', 0)
+            if duration > 600:  # Больше 10 минут
+                logger.info(f"⚠️ Длинное видео ({duration//60} мин.), загрузка может занять время...")
+                
         elif platform == 'tiktok':
             logger.info(f"🎵 Платформа: TikTok")
             logger.info(f"🎬 Название: {info.get('title', 'N/A')[:60]}")
@@ -221,7 +229,12 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
                         logger.info("🛑 Отмена загрузки во время скачивания")
                         raise Exception("DOWNLOAD_CANCELLED")
                     
-                    console_logger.download_progress(percent, speed=speed, eta=eta)
+                    # Показываем прогресс только каждые 5% для длинных видео
+                    if percent % 5 < 0.1:  # Каждые 5%
+                        console_logger.download_progress(percent, speed=speed, eta=eta)
+                    elif percent >= 99:
+                        console_logger.download_progress(percent, speed=speed, eta=eta)
+                        
                 except Exception as e:
                     if str(e) == "DOWNLOAD_CANCELLED":
                         raise
@@ -233,7 +246,16 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 download_time = time.time() - download_start
-                logger.info(f"⏱ Скачивание заняло: {download_time:.1f}с")
+                
+                # Форматируем время загрузки
+                if download_time > 60:
+                    minutes = int(download_time // 60)
+                    seconds = int(download_time % 60)
+                    time_str = f"{minutes}м {seconds}с"
+                else:
+                    time_str = f"{download_time:.1f}с"
+                    
+                logger.info(f"⏱ Скачивание заняло: {time_str}")
         except Exception as e:
             if str(e) == "DOWNLOAD_CANCELLED" or cancel_event.is_set():
                 logger.info("🛑 Скачивание прервано пользователем")
@@ -376,7 +398,8 @@ async def start_handler(event):
         "**Ограничения:**\n"
         "• Макс. размер: 2GB\n"
         "• Только открытые видео\n"
-        "• По одной загрузке за раз\n\n"
+        "• По одной загрузке за раз\n"
+        "• Таймаут: 30 минут\n\n"
         "📊 YouTube: 360p | 🎵 TikTok: лучшее качество | 🖼 С превью"
     )
     
@@ -399,7 +422,8 @@ async def help_handler(event):
         "• Загружается только одно видео за раз\n"
         "• Дождитесь окончания текущей загрузки\n"
         "• Не отправляйте новую ссылку пока идет загрузка\n"
-        "• Превью добавляется без изменения видео\n\n"
+        "• Превью добавляется без изменения видео\n"
+        "• Для длинных видео может потребоваться время\n\n"
         "**Команды:**\n"
         "/start - Главное меню\n"
         "/help - Эта справка\n"
@@ -470,7 +494,8 @@ async def message_handler(event):
         f"🌐 Платформа: **{platform_name}**\n"
         "🔍 Проверяю доступность...\n"
         "🖼 Скачаю превью для видео\n"
-        "⏳ Пожалуйста, подождите... (отмена: /cancel)"
+        "⏳ Пожалуйста, подождите... (отмена: /cancel)\n"
+        "⏰ Таймаут: 30 минут"
     )
     
     start_time = datetime.now()
@@ -493,9 +518,12 @@ async def message_handler(event):
             )
         except asyncio.TimeoutError:
             await status_msg.edit(
-                "⏰ **Превышено время ожидания**\n\n"
-                "Загрузка заняла более 10 минут и была отменена.\n"
-                "Попробуйте другое видео или проверьте скорость интернета."
+                "⏰ **Превышено время ожидания (30 минут)**\n\n"
+                "Загрузка заняла слишком много времени и была отменена.\n"
+                "Попробуйте:\n"
+                "• Видео покороче\n"
+                "• Проверить скорость интернета\n"
+                "• Использовать формат 144p (более легкий)"
             )
             logger.error(f"⏰ Таймаут загрузки для {clean_url}")
             return
@@ -579,6 +607,14 @@ async def message_handler(event):
         
         upload_time = (datetime.now() - start_time).total_seconds()
         
+        # Форматируем общее время
+        if upload_time > 60:
+            minutes = int(upload_time // 60)
+            seconds = int(upload_time % 60)
+            total_time_str = f"{minutes}м {seconds}с"
+        else:
+            total_time_str = f"{upload_time:.1f}с"
+        
         console_logger.end_operation("Отправка видео", success=True)
         
         await status_msg.delete()
@@ -587,7 +623,7 @@ async def message_handler(event):
             f"✅ УСПЕШНО: {video_info['title'][:50]}... | "
             f"Платформа: {platform_name} | "
             f"Размер: {file_size_mb:.1f}MB | "
-            f"Время: {upload_time:.1f}s | "
+            f"Общее время: {total_time_str} | "
             f"Превью: {'есть' if thumbnail_path else 'нет'}"
         )
         
@@ -655,9 +691,10 @@ async def main():
     logger.info(f"🎵 TikTok: лучшее качество")
     logger.info(f"🖼 Превью: скачивается отдельно для Telegram")
     logger.info(f"📦 Макс. размер: {MAX_FILE_SIZE_MB} MB")
-    logger.info(f"⏱ Таймаут загрузки: {DOWNLOAD_TIMEOUT}s")
+    logger.info(f"⏱ Таймаут загрузки: {DOWNLOAD_TIMEOUT}s (30 минут)")
     logger.info(f"🔧 yt-dlp версия: {yt_dlp.version.__version__}")
     logger.info(f"⚡ Без постобработки (быстрая загрузка)")
+    logger.info(f"🔄 Параллельная загрузка: 4 потока")
     
     try:
         test_file = os.path.join(DOWNLOAD_FOLDER, '.write_test')
@@ -683,9 +720,10 @@ async def main():
         print(f"  📝 Отправьте ссылку на видео")
         print(f"  📺 YouTube: 360p | 🎵 TikTok: лучшее")
         print(f"  🖼 Превью: скачивается отдельно")
-        print(f"  ⏱ Таймаут: 10 мин")
+        print(f"  ⏱ Таймаут: 30 минут")
         print(f"  🚫 Отмена: /cancel в любой момент")
         print(f"  ⚡ Без перекодирования")
+        print(f"  🔄 Параллельная загрузка")
         print("=" * 60)
         print()
         
