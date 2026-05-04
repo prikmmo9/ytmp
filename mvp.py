@@ -1,10 +1,11 @@
-# youtube_bot_mvp.py (исправленная версия с блокировкой и таймаутом)
+# youtube_bot_mvp.py (исправленная версия с полноценной отменой загрузки)
 import os
 import asyncio
 import re
 import logging
 import threading
 from datetime import datetime
+from typing import Optional
 
 import yt_dlp
 from telethon import TelegramClient, events
@@ -36,16 +37,18 @@ os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 # Клиент Telegram
 client = TelegramClient('bot_session', API_ID, API_HASH)
 
-# Блокировка для предотвращения одновременных загрузок
+# Глобальная блокировка для ограничения параллельных загрузок (опционально)
 download_lock = threading.Lock()
-user_downloading = {}  # Отслеживание активных загрузок пользователей
+
+# Отслеживание активных загрузок: user_id -> threading.Event()
+user_downloads = {}
 
 
 # ============================================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ============================================================
 
-def clean_youtube_url(url: str) -> str | None:
+def clean_youtube_url(url: str) -> Optional[str]:
     """Очищает YouTube URL от лишних параметров."""
     patterns = [
         r'(?:https?://)?(?:www\.)?youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})',
@@ -64,10 +67,22 @@ def clean_youtube_url(url: str) -> str | None:
     return None
 
 
-def download_video_sync(youtube_url: str) -> dict | None:
+def download_video_sync(youtube_url: str, cancel_event: threading.Event) -> Optional[dict]:
     """
     Синхронная функция скачивания видео (запускается в отдельном потоке).
+    
+    Args:
+        youtube_url: URL видео
+        cancel_event: Событие для отмены загрузки
+    
+    Returns:
+        dict с информацией о видео или None при ошибке/отмене
     """
+    # Проверка отмены перед началом
+    if cancel_event.is_set():
+        logger.info("🛑 Загрузка отменена до начала")
+        return None
+    
     video_id = youtube_url.split('=')[-1] if '=' in youtube_url else youtube_url
     
     ydl_opts = {
@@ -75,9 +90,9 @@ def download_video_sync(youtube_url: str) -> dict | None:
         'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
         'quiet': True,
         'no_warnings': True,
-        'socket_timeout': 30,  # Таймаут на сокет
-        'retries': 5,
-        'fragment_retries': 5,
+        'socket_timeout': 30,
+        'retries': 3,
+        'fragment_retries': 3,
         'skip_unavailable_fragments': True,
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -87,6 +102,11 @@ def download_video_sync(youtube_url: str) -> dict | None:
     # Шаг 1: Получение информации
     console_logger.step("Получение информации о видео...", current=1, total=3)
     
+    # Проверка отмены
+    if cancel_event.is_set():
+        logger.info("🛑 Загрузка отменена (шаг 1)")
+        return None
+    
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             # Сначала получаем информацию без скачивания
@@ -94,6 +114,11 @@ def download_video_sync(youtube_url: str) -> dict | None:
             
             if not info:
                 logger.error("Не удалось получить информацию о видео")
+                return None
+            
+            # Проверка отмены после получения информации
+            if cancel_event.is_set():
+                logger.info("🛑 Загрузка отменена (после получения информации)")
                 return None
             
             # Показываем информацию
@@ -108,7 +133,12 @@ def download_video_sync(youtube_url: str) -> dict | None:
             # Шаг 2: Скачивание
             console_logger.step("Скачивание видео...", current=2, total=3)
             
-            # Добавляем прогресс-хук
+            # Проверка отмены перед скачиванием
+            if cancel_event.is_set():
+                logger.info("🛑 Загрузка отменена (перед скачиванием)")
+                return None
+            
+            # Добавляем прогресс-хук с проверкой отмены
             def progress_hook(d):
                 if d['status'] == 'downloading':
                     try:
@@ -116,18 +146,42 @@ def download_video_sync(youtube_url: str) -> dict | None:
                         percent = float(percent_str) if percent_str else 0
                         speed = d.get('_speed_str', '')
                         eta = d.get('_eta_str', '')
+                        
+                        # Проверяем отмену во время загрузки
+                        if cancel_event.is_set():
+                            logger.info("🛑 Отмена загрузки во время скачивания")
+                            raise Exception("DOWNLOAD_CANCELLED")
+                        
                         console_logger.download_progress(percent, speed=speed, eta=eta)
-                    except:
+                    except Exception as e:
+                        if str(e) == "DOWNLOAD_CANCELLED":
+                            raise
                         pass
             
             ydl_opts['progress_hooks'] = [progress_hook]
             
-            # Скачиваем
-            info = ydl.extract_info(youtube_url, download=True)
-            file_path = ydl.prepare_filename(info)
+            try:
+                # Скачиваем
+                info = ydl.extract_info(youtube_url, download=True)
+            except Exception as e:
+                if str(e) == "DOWNLOAD_CANCELLED" or cancel_event.is_set():
+                    logger.info("🛑 Скачивание прервано пользователем")
+                    return None
+                raise
             
-            # Шаг 3: Проверка
+            # Проверка отмены после скачивания
+            if cancel_event.is_set():
+                logger.info("🛑 Загрузка отменена (после скачивания)")
+                # Удаляем скачанный файл
+                file_path = ydl.prepare_filename(info)
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                return None
+            
+            # Шаг 3: Проверка файла
             console_logger.step("Проверка файла...", current=3, total=3)
+            
+            file_path = ydl.prepare_filename(info)
             
             # Ищем файл если расширение не совпало
             if not os.path.exists(file_path):
@@ -151,7 +205,7 @@ def download_video_sync(youtube_url: str) -> dict | None:
             
             return {
                 'title': info.get('title', 'Видео'),
-                'uploader': info.get('uploader', 'Неизвестный канал'),
+                'uploader': info.get('uploader') or 'Неизвестный канал',
                 'duration': info.get('duration', 0),
                 'file_path': file_path,
                 'file_size_mb': file_size_mb,
@@ -163,6 +217,9 @@ def download_video_sync(youtube_url: str) -> dict | None:
         logger.error(f"yt-dlp error: {error_msg[:200]}")
         raise
     except Exception as e:
+        if str(e) == "DOWNLOAD_CANCELLED":
+            logger.info("🛑 Загрузка отменена пользователем")
+            return None
         logger.error(f"Ошибка при скачивании: {str(e)[:200]}")
         raise
 
@@ -236,12 +293,17 @@ async def cancel_handler(event):
     """Отмена текущей загрузки"""
     user_id = event.sender_id
     
-    if user_id in user_downloading:
-        user_downloading[user_id] = False
-        await event.reply("🛑 **Загрузка отменена**")
-        logger.info(f"🛑 Пользователь {user_id} отменил загрузку")
+    if user_id in user_downloads:
+        # Устанавливаем флаг отмены
+        user_downloads[user_id].set()
+        await event.reply(
+            "🛑 **Отмена загрузки...**\n\n"
+            "⏳ Завершаю текущие операции и очищаю ресурсы.\n"
+            "Пожалуйста, подождите несколько секунд."
+        )
+        logger.info(f"🛑 Пользователь {user_id} запросил отмену загрузки")
     else:
-        await event.reply("ℹ️ У вас нет активных загрузок")
+        await event.reply("ℹ️ У вас нет активных загрузок для отмены")
 
 
 # ============================================================
@@ -266,7 +328,7 @@ async def message_handler(event):
         return
     
     # Проверяем, нет ли уже активной загрузки
-    if user_id in user_downloading and user_downloading[user_id]:
+    if user_id in user_downloads and not user_downloads[user_id].is_set():
         await event.reply(
             "⚠️ **У вас уже есть активная загрузка!**\n\n"
             "Дождитесь её завершения или отмените командой /cancel"
@@ -277,14 +339,15 @@ async def message_handler(event):
     console_logger.separator(f"НОВЫЙ ЗАПРОС от {user_id}")
     logger.info(f"🔗 YouTube URL: {youtube_url}")
     
-    # Устанавливаем флаг загрузки
-    user_downloading[user_id] = True
+    # Создаем событие для отмены
+    cancel_event = threading.Event()
+    user_downloads[user_id] = cancel_event
     
     # Отправляем сообщение о начале
     status_msg = await event.reply(
         "⏬ **Начинаю загрузку видео...**\n"
         "🔍 Проверяю доступность видео...\n"
-        "⏳ Пожалуйста, подождите..."
+        "⏳ Пожалуйста, подождите... (отмена: /cancel)"
     )
     
     start_time = datetime.now()
@@ -294,7 +357,12 @@ async def message_handler(event):
         loop = asyncio.get_event_loop()
         
         # Создаем задачу с таймаутом
-        download_task = loop.run_in_executor(None, download_video_sync, youtube_url)
+        download_task = loop.run_in_executor(
+            None, 
+            download_video_sync, 
+            youtube_url, 
+            cancel_event
+        )
         
         try:
             video_info = await asyncio.wait_for(
@@ -310,14 +378,13 @@ async def message_handler(event):
             logger.error(f"⏰ Таймаут загрузки для {youtube_url}")
             return
         
-        if not video_info:
+        # Проверяем, была ли отмена
+        if cancel_event.is_set() or video_info is None:
             await status_msg.edit(
-                "❌ **Не удалось скачать видео**\n\n"
-                "Возможные причины:\n"
-                "• Видео недоступно\n"
-                "• Неверная ссылка\n"
-                "• Проблемы с сетью"
+                "🛑 **Загрузка отменена**\n\n"
+                "Все временные файлы удалены."
             )
+            logger.info(f"🛑 Загрузка отменена для {user_id}")
             return
         
         file_path = video_info['file_path']
@@ -331,7 +398,8 @@ async def message_handler(event):
                 f"🚫 Лимит: **{MAX_FILE_SIZE_MB} MB**\n\n"
                 f"💡 Попробуйте найти это видео в более низком качестве"
             )
-            os.remove(file_path)
+            if os.path.exists(file_path):
+                os.remove(file_path)
             return
         
         # Обновляем статус
@@ -383,9 +451,10 @@ async def message_handler(event):
         
         # Удаляем файл
         try:
-            os.remove(file_path)
-        except:
-            pass
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception as e:
+            logger.warning(f"Не удалось удалить файл {file_path}: {e}")
         
     except yt_dlp.utils.DownloadError as e:
         error_msg = str(e)
@@ -401,16 +470,29 @@ async def message_handler(event):
         else:
             error_text = f"❌ **Ошибка при скачивании**\n\n```{error_msg[:200]}```"
         
-        await status_msg.edit(error_text)
-        logger.error(f"❌ ОШИБКА: {error_msg[:100]}...")
+        # Проверяем, была ли отмена
+        if cancel_event.is_set():
+            error_text = "🛑 **Загрузка отменена**\n\nВсе временные файлы удалены."
+        else:
+            await status_msg.edit(error_text)
+            logger.error(f"❌ ОШИБКА: {error_msg[:100]}...")
         
     except Exception as e:
-        logger.error(f"💥 НЕОЖИДАННАЯ ОШИБКА: {str(e)[:200]}")
-        await status_msg.edit(f"❌ **Произошла ошибка**\n\n```{str(e)[:200]}```")
+        if not cancel_event.is_set():
+            logger.error(f"💥 НЕОЖИДАННАЯ ОШИБКА: {str(e)[:200]}")
+            await status_msg.edit(f"❌ **Произошла ошибка**\n\n```{str(e)[:200]}```")
     
     finally:
-        # Снимаем флаг загрузки
-        user_downloading[user_id] = False
+        # Очищаем состояние загрузки
+        if user_id in user_downloads:
+            del user_downloads[user_id]
+        
+        # Если была отмена и статусное сообщение ещё существует
+        try:
+            if cancel_event.is_set():
+                await status_msg.edit("🛑 **Загрузка отменена**\n\nВсе временные файлы успешно удалены.")
+        except:
+            pass
 
 
 # ============================================================
@@ -453,7 +535,7 @@ async def main():
         print("=" * 60)
         print(f"  📝 Отправьте ссылку на YouTube видео")
         print(f"  📊 Качество: 360p | ⏱ Таймаут: 10 мин")
-        print(f"  🚫 Одновременных загрузок: 1 на пользователя")
+        print(f"  🚫 Отмена: /cancel в любой момент")
         print("=" * 60)
         print()
         
