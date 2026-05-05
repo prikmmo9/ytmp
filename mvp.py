@@ -1,4 +1,4 @@
-# youtube_tiktok_bot_mvp.py (с поддержкой YouTube и TikTok)
+# youtube_tiktok_bot_mvp.py
 import os
 import asyncio
 import re
@@ -16,14 +16,13 @@ from logger_config import create_logger
 # КОНФИГУРАЦИЯ
 # ============================================================
 API_ID = int(os.getenv('API_ID', '22268845'))
-API_HASH = os.getenv('API_HASH', 'ffbeffdfb86784e12b39aea5f53857d2')
+API_HASH = os.getenv('API_HASH', 'ffbeffdfb86784e12b39aea5f53857d2'))
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8566350925:AAEOwpPgXhmR3SE_7TapSbzMJnqImnMA-Js')
 
 DOWNLOAD_FOLDER = 'downloads'
 MAX_FILE_SIZE_MB = 2000
 DOWNLOAD_TIMEOUT = 600
 
-# Создаем консольный логгер
 console_logger = create_logger(
     name='MediaBot',
     level=logging.DEBUG,
@@ -36,22 +35,6 @@ os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 
 client = TelegramClient('bot_session', API_ID, API_HASH)
 user_downloads = {}
-
-
-# ============================================================
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-# ============================================================
-
-def check_aria2():
-    import subprocess
-    try:
-        subprocess.run(['aria2c', '--version'], capture_output=True, timeout=2)
-        return True
-    except:
-        return False
-
-
-ARIA2_AVAILABLE = check_aria2()
 
 
 def detect_platform(url: str) -> Tuple[Optional[str], Optional[str]]:
@@ -73,7 +56,6 @@ def detect_platform(url: str) -> Tuple[Optional[str], Optional[str]]:
         r'(?:https?://)?(?:www\.)?tiktok\.com/@[\w.-]+/video/(\d+)',
         r'(?:https?://)?(?:www\.)?tiktok\.com/t/(\w+)',
         r'(?:https?://)?vm\.tiktok\.com/(\w+)',
-        r'(?:https?://)?vt\.tiktok\.com/(\w+)',
     ]
     
     for pattern in tiktok_patterns:
@@ -85,123 +67,71 @@ def detect_platform(url: str) -> Tuple[Optional[str], Optional[str]]:
 
 
 def download_video_sync(url: str, platform: str, cancel_event: threading.Event) -> Optional[dict]:
-    """
-    Синхронная функция скачивания видео.
-    ГЛАВНОЕ ИЗМЕНЕНИЕ: ОДИН вызов yt-dlp для всего (информация + скачивание).
-    """
     if cancel_event.is_set():
         logger.info("🛑 Загрузка отменена до начала")
         return None
     
-    console_logger.step(f"Получение информации и скачивание ({platform})...", current=1, total=2)
-    
-    if cancel_event.is_set():
-        logger.info("🛑 Загрузка отменена")
-        return None
+    console_logger.step(f"Скачивание ({platform})...", current=1, total=2)
     
     start_time = time.time()
     
-    # ============================================================
-    # ЕДИНЫЕ ОПЦИИ ДЛЯ ПОЛУЧЕНИЯ ИНФОРМАЦИИ И СКАЧИВАНИЯ
-    # ============================================================
-    
     if platform == 'youtube':
-        if ARIA2_AVAILABLE:
-            logger.info("🚀 aria2c: 16 потоков")
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'socket_timeout': 30,
-                'retries': 3,
-                'fragment_retries': 3,
-                'skip_unavailable_fragments': True,
-                'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
-                'merge_output_format': 'mp4',
-                'external_downloader': 'aria2c',
-                'external_downloader_args': [
-                    '-x', '16', '-s', '16', '-k', '1M',
-                    '--max-connection-per-server=16',
-                    '--min-split-size=1M',
-                    '--file-allocation=none',
-                    '--async-dns=true',
-                    '--max-tries=5',
-                    '--retry-wait=1',
-                ],
-                # ФИКСИРОВАННЫЙ ФОРМАТ: только mp4 360p с AVC
-                'format': '134+140/18',  # 134=360p AVC mp4, 140=audio m4a, 18=запасной
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                }
+        # ============================================================
+        # ПРОБУЕМ РАЗНЫЕ ФОРМАТЫ ДЛЯ МАКСИМАЛЬНОЙ СКОРОСТИ
+        # ============================================================
+        
+        # Пробуем НАТИВНЫЙ загрузчик (не aria2c)
+        # Иногда встроенный загрузчик быстрее!
+        logger.info("⚡ Встроенный загрузчик (нативный)")
+        
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 30,
+            'retries': 3,
+            'fragment_retries': 3,
+            'skip_unavailable_fragments': True,
+            'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
+            'merge_output_format': 'mp4',
+            # ВАЖНО: отключаем aria2c ВООБЩЕ
+            'external_downloader': None,
+            # Настройки для нативного загрузчика
+            'concurrent_fragment_downloads': 16,
+            'buffersize': 10 * 1024 * 1024,  # 10MB буфер
+            'http_chunk_size': 50 * 1024 * 1024,  # 50MB чанки
+            # Пробуем формат 22 (720p готовый mp4) - иногда он быстрее!
+            'format': '22/18/134+140/best[height<=480][ext=mp4]/best',
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             }
-        else:
-            logger.info("⚡ Встроенный загрузчик")
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'socket_timeout': 30,
-                'retries': 3,
-                'fragment_retries': 3,
-                'skip_unavailable_fragments': True,
-                'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
-                'merge_output_format': 'mp4',
-                'concurrent_fragment_downloads': 16,
-                'buffersize': 2 * 1024 * 1024,
-                'http_chunk_size': 20 * 1024 * 1024,
-                # ФИКСИРОВАННЫЙ ФОРМАТ
-                'format': '134+140/18',
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                }
-            }
+        }
+        
     elif platform == 'tiktok':
-        if ARIA2_AVAILABLE:
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'socket_timeout': 30,
-                'retries': 3,
-                'format': 'best[ext=mp4]/best',
-                'outtmpl': f'{DOWNLOAD_FOLDER}/%(uploader)s_%(title).100s_%(id)s.%(ext)s',
-                'postprocessors': [],
-                'prefer_ffmpeg': False,
-                'merge_output_format': None,
-                'external_downloader': 'aria2c',
-                'external_downloader_args': ['-x', '8', '-s', '8', '-k', '1M', '--file-allocation=none'],
-                'extractor_args': {
-                    'tiktok': {'api_hostname': 'api16-normal-c-useast1a.tiktokv.com'}
-                },
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                }
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 30,
+            'retries': 3,
+            'format': 'best[ext=mp4]/best',
+            'outtmpl': f'{DOWNLOAD_FOLDER}/%(uploader)s_%(title).100s_%(id)s.%(ext)s',
+            'postprocessors': [],
+            'prefer_ffmpeg': False,
+            'merge_output_format': None,
+            'concurrent_fragment_downloads': 8,
+            'buffersize': 10 * 1024 * 1024,
+            'http_chunk_size': 50 * 1024 * 1024,
+            'extractor_args': {
+                'tiktok': {'api_hostname': 'api16-normal-c-useast1a.tiktokv.com'}
+            },
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             }
-        else:
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'socket_timeout': 30,
-                'retries': 3,
-                'format': 'best[ext=mp4]/best',
-                'outtmpl': f'{DOWNLOAD_FOLDER}/%(uploader)s_%(title).100s_%(id)s.%(ext)s',
-                'postprocessors': [],
-                'prefer_ffmpeg': False,
-                'merge_output_format': None,
-                'concurrent_fragment_downloads': 8,
-                'extractor_args': {
-                    'tiktok': {'api_hostname': 'api16-normal-c-useast1a.tiktokv.com'}
-                },
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                }
-            }
+        }
     else:
         logger.error(f"Неизвестная платформа: {platform}")
         return None
     
     try:
-        # ============================================================
-        # ОДИН ВЫЗОВ: получаем информацию и сразу качаем
-        # ============================================================
-        
         def progress_hook(d):
             if d['status'] == 'downloading':
                 try:
@@ -219,28 +149,48 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
                         raise
                     pass
             elif d['status'] == 'finished':
-                logger.info(f"✅ Часть загружена: {os.path.basename(d.get('filename', 'unknown'))}")
+                logger.info(f"✅ Готово: {os.path.basename(d.get('filename', 'unknown'))}")
         
         ydl_opts['progress_hooks'] = [progress_hook]
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Извлекаем информацию И скачиваем за один раз
-            info = ydl.extract_info(url, download=True)
+        # Пробуем сначала БЫСТРО получить инфо (без скачивания)
+        info_opts = {**ydl_opts, 'skip_download': True}
+        
+        with yt_dlp.YoutubeDL(info_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
             
             if not info:
                 logger.error("Не удалось получить информацию")
                 return None
             
+            # Проверяем, какой формат БУДЕТ выбран
+            selected_format = info.get('format_id', '?')
+            selected_ext = info.get('ext', '?')
+            logger.info(f"🎯 Выбран формат: {selected_format} ({selected_ext})")
+            
+            # Проверяем размер
+            if info.get('filesize'):
+                size_mb = info['filesize'] / (1024 * 1024)
+                logger.info(f"💾 Ожидаемый размер: {size_mb:.1f} MB")
+            elif info.get('filesize_approx'):
+                size_mb = info['filesize_approx'] / (1024 * 1024)
+                logger.info(f"💾 Примерный размер: {size_mb:.1f} MB")
+        
+        if cancel_event.is_set():
+            logger.info("🛑 Отменено")
+            return None
+        
+        # ТЕПЕРЬ КАЧАЕМ
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            
             total_time = time.time() - start_time
             
-            # Логируем основную информацию
             logger.info(f"⏱ Общее время: {total_time:.1f}с")
-            logger.info(f"🎬 Название: {info.get('title', 'N/A')[:80]}")
-            logger.info(f"👤 Автор: {info.get('uploader', 'N/A')}")
-            logger.info(f"⏱ Длительность: {info.get('duration', 0)}с")
+            logger.info(f"🎬 {info.get('title', 'N/A')[:80]}")
+            logger.info(f"👤 {info.get('uploader', 'N/A')}")
             logger.info(f"📊 Формат: {info.get('format_id', '?')}")
             
-            # Находим файл
             file_path = ydl.prepare_filename(info)
             
             if not os.path.exists(file_path):
@@ -257,14 +207,14 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
                     if possible:
                         file_path = possible[0]
                     else:
-                        logger.error(f"Файл не найден!")
+                        logger.error("Файл не найден!")
                         return None
             
             file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
             download_speed = file_size_mb / total_time if total_time > 0 else 0
             
-            logger.info(f"📁 Файл: {os.path.basename(file_path)}")
-            logger.info(f"💾 Размер: {file_size_mb:.1f} MB")
+            logger.info(f"📁 {os.path.basename(file_path)}")
+            logger.info(f"💾 {file_size_mb:.1f} MB")
             logger.info(f"⚡ Скорость: {download_speed:.2f} MB/s")
             
             duration = info.get('duration', 0)
@@ -301,10 +251,6 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
         raise
 
 
-# ============================================================
-# ОБРАБОТЧИКИ КОМАНД
-# ============================================================
-
 @client.on(events.NewMessage(pattern='/start'))
 async def start_handler(event):
     user_id = event.sender_id
@@ -316,22 +262,16 @@ async def start_handler(event):
     
     logger.info(f"📱 /start от {user_name}")
     
-    welcome = (
+    await event.reply(
         f"🎬 **Привет, {user_name}!**\n\n"
         "Я - Media Download Bot! 🤖\n\n"
-        "⚡ **Мгновенная загрузка видео!**\n"
-        f"• 📺 YouTube: 360p (AVC mp4)\n"
-        f"• 🎵 TikTok: лучшее качество\n"
-        f"• {'🚀 aria2c 16 потоков' if ARIA2_AVAILABLE else '⚡ Оптимизированная загрузка'}\n\n"
-        "**Как использовать:**\n"
-        "Просто отправь мне ссылку на видео!\n\n"
-        "**Поддерживаемые платформы:**\n"
-        "📺 YouTube: ссылки и ID\n"
-        "🎵 TikTok: ссылки на видео\n\n"
+        "⚡ **Быстрая загрузка видео!**\n"
+        "• 📺 YouTube: 720p/480p/360p mp4\n"
+        "• 🎵 TikTok: лучшее качество\n"
+        "• ⚡ Нативный загрузчик (макс. скорость)\n\n"
+        "Просто отправь мне ссылку!\n\n"
         "⚠️ Макс. размер: 2GB | Отмена: /cancel"
     )
-    
-    await event.reply(welcome)
 
 
 @client.on(events.NewMessage(pattern='/help'))
@@ -339,10 +279,8 @@ async def help_handler(event):
     await event.reply(
         "📖 **Справка**\n\n"
         "1️⃣ Отправьте ссылку\n"
-        "2️⃣ Бот мгновенно скачает видео\n"
+        "2️⃣ Бот скачает видео\n"
         "3️⃣ Видео отправится вам\n\n"
-        "⚡ **Формат YouTube:** 134+140 (AVC 360p + AAC)\n"
-        "🚀 **Скорость:** максимальная\n\n"
         "Команды: /start /help /cancel"
     )
 
@@ -357,10 +295,6 @@ async def cancel_handler(event):
     else:
         await event.reply("ℹ️ Нет активных загрузок")
 
-
-# ============================================================
-# ОСНОВНОЙ ОБРАБОТЧИК
-# ============================================================
 
 @client.on(events.NewMessage)
 async def message_handler(event):
@@ -377,7 +311,7 @@ async def message_handler(event):
         return
     
     if user_id in user_downloads and not user_downloads[user_id].is_set():
-        await event.reply("⚠️ **У вас уже есть активная загрузка!**\nДождитесь завершения или /cancel")
+        await event.reply("⚠️ **Уже есть активная загрузка!**\nДождитесь или /cancel")
         return
     
     platform_emoji = "📺" if platform == "youtube" else "🎵"
@@ -393,7 +327,7 @@ async def message_handler(event):
     status_msg = await event.reply(
         f"{platform_emoji} **Загружаю видео...**\n"
         f"🌐 {platform_name}\n"
-        f"⚡ Мгновенная загрузка\n"
+        f"⚡ Нативный загрузчик\n"
         f"🚫 /cancel для отмены"
     )
     
@@ -427,7 +361,6 @@ async def message_handler(event):
         
         await status_msg.edit(f"✅ **Скачано!** ({file_size_mb:.1f} MB)\n📤 Отправляю...")
         
-        # Формируем подпись
         duration = video_info.get('duration', 0)
         if duration > 0:
             minutes, secs = divmod(int(duration), 60)
@@ -455,7 +388,6 @@ async def message_handler(event):
         
         caption += (
             f"💾 **Размер:** {file_size_mb:.1f} MB\n"
-            f"📊 **Качество:** {'360p AVC' if platform == 'youtube' else 'Лучшее'}\n"
             f"🔗 {video_info['url']}"
         )
         
@@ -491,22 +423,13 @@ async def message_handler(event):
             del user_downloads[user_id]
 
 
-# ============================================================
-# ЗАПУСК БОТА
-# ============================================================
-
 async def main():
     console_logger.separator("ЗАПУСК БОТА", char="=")
     
-    logger.info(f"📺 YouTube: ФОРМАТ 134+140 (360p AVC mp4 + AAC m4a)")
+    logger.info(f"📺 YouTube: 22 (720p mp4) / 18 (360p) / 134+140")
     logger.info(f"🎵 TikTok: лучшее качество")
-    logger.info(f"⚡ ОДИН вызов yt-dlp (информация + скачивание)")
-    logger.info(f"🚫 Формат 18 НЕ используется")
-    
-    if ARIA2_AVAILABLE:
-        logger.info("🚀 aria2c: 16 потоков")
-    else:
-        logger.info("⚡ Встроенный загрузчик")
+    logger.info(f"⚡ НАТИВНЫЙ загрузчик (без aria2c)")
+    logger.info(f"📦 Буфер: 10MB | Чанки: 50MB")
     
     await client.start(bot_token=BOT_TOKEN)
     me = await client.get_me()
@@ -516,8 +439,8 @@ async def main():
     print()
     print("=" * 60)
     print(f"  🤖 БОТ: @{me.username}")
-    print(f"  📺 YouTube: 360p AVC (134+140)")
-    print(f"  ⚡ Мгновенная загрузка")
+    print(f"  📺 YouTube: 720p/360p mp4")
+    print(f"  ⚡ Нативный загрузчик")
     print(f"  🚫 /cancel для отмены")
     print("=" * 60)
     print()
