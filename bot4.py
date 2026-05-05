@@ -326,4 +326,126 @@ async def callback_handler(event):
                     thumb=thumb_path if thumb_path and os.path.exists(thumb_path) else None,
                     attributes=[telethon.types.DocumentAttributeVideo(
                         duration=duration, w=video_info.get('width', 640),
-                        h=video_info.get('height',
+                        h=video_info.get('height', 360),
+                        supports_streaming=True, round_message=False
+                    )],
+                    supports_streaming=True)
+        
+        # Сохраняем в БД
+        if storage_message:
+            save_complete_info_with_storage(
+                video_id=video_id, platform=platform, quality=quality,
+                info=video_info.get('full_info', video_info),
+                storage_chat_id=storage_chat_id,
+                storage_message_id=storage_message.id,
+                file_size_mb=file_size_mb,
+            )
+        
+        await event.delete()
+        
+        # Чистим
+        try:
+            if os.path.exists(file_path): os.remove(file_path)
+            if thumb_path and os.path.exists(thumb_path): os.remove(thumb_path)
+        except: pass
+    
+    except asyncio.TimeoutError:
+        await event.edit("⏰ **Таймаут загрузки**")
+    except Exception as e:
+        if not cancel_event.is_set():
+            logger.error(f"Ошибка: {str(e)[:200]}")
+            await event.edit(f"❌ **Ошибка:** {str(e)[:200]}")
+    finally:
+        if user_id in user_downloads: del user_downloads[user_id]
+        if user_id in user_selections: del user_selections[user_id]
+
+
+# ============================================================
+# ОСНОВНОЙ ОБРАБОТЧИК ССЫЛОК
+# ============================================================
+
+@client.on(events.NewMessage)
+async def message_handler(event):
+    text = event.text.strip() if event.text else ""
+    user_id = event.sender_id
+    
+    if text.startswith('/'): return
+    if text == '123455':
+        await database_handler(event)
+        return
+    
+    platform, clean_url, video_id = detect_platform(text)
+    
+    if not platform: return
+    
+    user_selections[user_id] = {
+        'url': clean_url,
+        'platform': platform,
+        'video_id': video_id,
+    }
+    
+    platform_emoji = "📺" if platform == "youtube" else "🎵"
+    platform_name = "YouTube" if platform == "youtube" else "TikTok"
+    
+    cached_qualities = get_available_qualities(video_id) if video_id else []
+    
+    quality_text = f"{platform_emoji} **{platform_name}**\n\n🔗 {clean_url}\n\n"
+    
+    if cached_qualities:
+        quality_text += "⚡ **В кэше:**\n"
+        for q in cached_qualities:
+            quality_text += f"• {q['label']}: {q['size_mb']:.1f} MB\n"
+        quality_text += "\n"
+    
+    quality_text += "🎯 **Выберите качество:**"
+    
+    buttons = [
+        [Button.inline("📺 360p", data="quality:360"), Button.inline("📺 480p", data="quality:480")],
+        [Button.inline("📺 720p HD", data="quality:720"), Button.inline("📺 1080p Full HD", data="quality:1080")],
+        [Button.inline("🎵 MP3 (аудио)", data="quality:mp3")],
+    ]
+    
+    await event.reply(quality_text, buttons=buttons)
+
+
+# ============================================================
+# ЗАПУСК БОТА
+# ============================================================
+
+async def main():
+    global storage_chat_id
+    
+    console_logger.separator("ЗАПУСК БОТА", char="=")
+    
+    stats = get_stats()
+    logger.info(f"📺 YouTube + 🎵 TikTok | 💾 БД: {stats['total_videos']} видео")
+    logger.info(f"🍪 Cookies: {'✅' if os.path.exists(COOKIES_FILE) else '❌'} | 🚀 aria2c: {'✅' if ARIA2_AVAILABLE else '❌'}")
+    
+    await client.start(bot_token=BOT_TOKEN)
+    me = await client.get_me()
+    
+    try:
+        entity = await client.get_entity(STORAGE_CHAT)
+        storage_chat_id = entity.id
+        logger.info(f"🗄 Хранилище: @copirkaDva ✅")
+    except Exception as e:
+        logger.error(f"❌ Хранилище недоступно: {e}")
+    
+    logger.info(f"✅ Бот запущен: @{me.username}")
+    
+    print()
+    print("=" * 60)
+    print(f"  🤖 БОТ: @{me.username}")
+    print(f"  📺 YouTube + 🎵 TikTok")
+    print(f"     360p | 480p | 720p | 1080p | MP3")
+    print(f"  🗄 Хранилище: {'✅' if storage_chat_id else '❌'}")
+    print(f"  💾 БД: {stats['total_videos']} видео")
+    print("=" * 60)
+    print()
+    
+    await client.run_until_disconnected()
+
+
+if __name__ == '__main__':
+    import logging
+    client.loop.run_until_complete(main())
