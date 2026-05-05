@@ -1,4 +1,4 @@
-# bot.py - Основной файл бота с многопоточностью, БД и мониторингом
+# bot.py - Основной файл бота с многопоточностью, прогресс-баром и мониторингом
 import os
 import asyncio
 import logging
@@ -13,7 +13,6 @@ from logger_config import create_logger
 from database import *
 from downloader import *
 from channel_monitor import *
-from progress_bar import VideoProgressBar
 
 # ============================================================
 # КОНФИГУРАЦИЯ
@@ -137,40 +136,85 @@ async def notify_subscribers(channel_id: str, video_title: str, video_url: str):
         try:
             await client.send_message(sub['user_id'], message)
             logger.info(f"📤 Уведомление отправлено пользователю {sub['user_id']}")
+            await asyncio.sleep(0.1)
         except Exception as e:
             logger.error(f"❌ Ошибка отправки уведомления {sub['user_id']}: {e}")
 
 
 # ============================================================
-# ОБРАБОТЧИК ЗАГРУЗКИ (многопоточный)
+# ОБРАБОТЧИК ЗАГРУЗКИ С ПРОГРЕСС-БАРОМ
 # ============================================================
 
 async def process_download(event, user_id, url, platform, video_id, quality):
-    """Обрабатывает загрузку с прогресс-баром"""
+    """Обрабатывает загрузку с обновлением прогресс-бара в сообщении"""
     
     quality_config = QUALITY_OPTIONS.get(quality, QUALITY_OPTIONS['360'])
     
     logger.info(f"🌐 {platform.upper()} | 📊 {quality_config['description']} | ID: {video_id}")
     
-    # Создаём прогресс-бар
-    progress = VideoProgressBar(
-        message=event._message if hasattr(event, '_message') else None,
-        platform=platform,
-        quality=quality_config['description'],
-    )
+    platform_emoji = "📺" if platform == "youtube" else "🎵"
+    platform_name = "YouTube" if platform == "youtube" else "TikTok"
+    start_time = datetime.now()
     
-    # Этап 1: Проверка кэша и получение информации
-    progress.update_stage1(10, "Проверяю кэш...")
-    await progress.update_message()
+    def generate_progress_text(stage: int, stage_name: str, percent: float, 
+                               extra_info: str = "", speed: str = "", eta: str = "",
+                               title: str = "") -> str:
+        """Генерирует текст прогресс-бара"""
+        bar_length = 20
+        filled = int(bar_length * percent / 100)
+        bar = "█" * filled + "░" * (bar_length - filled)
+        
+        elapsed = (datetime.now() - start_time).total_seconds()
+        elapsed_str = f"{int(elapsed // 60)}:{int(elapsed % 60):02d}"
+        
+        stage_emoji = {1: "🔍", 2: "⬇️", 3: "📤"}.get(stage, "✅")
+        
+        lines = [
+            f"{platform_emoji} **{platform_name}** | 📊 {quality_config['description']}",
+            f"",
+            f"{bar} **{percent:.1f}%**",
+            f"",
+            f"{stage_emoji} **Этап {stage}/3:** {stage_name}",
+            f"⏱ Прошло: {elapsed_str}",
+        ]
+        
+        if speed:
+            lines.append(f"⚡ Скорость: {speed}")
+        if eta:
+            lines.append(f"⏳ Осталось: {eta}")
+        if extra_info:
+            lines.append(f"💡 {extra_info}")
+        if title:
+            lines.append(f"")
+            lines.append(f"🎬 {title[:80]}")
+        
+        lines.append(f"")
+        lines.append(f"🚫 /cancel для отмены")
+        
+        return "\n".join(lines)
+    
+    async def update_progress(stage: int, stage_name: str, percent: float, 
+                              extra_info: str = "", speed: str = "", eta: str = "",
+                              title: str = ""):
+        """Обновляет сообщение с прогресс-баром"""
+        try:
+            text = generate_progress_text(stage, stage_name, percent, extra_info, speed, eta, title)
+            await event.edit(text)
+        except Exception as e:
+            logger.error(f"Ошибка обновления прогресса: {e}")
+    
+    # ============================================================
+    # ЭТАП 1: ПРОВЕРКА КЭША
+    # ============================================================
+    await update_progress(1, "Проверка кэша", 10, "Ищу в базе данных...")
     await asyncio.sleep(0.3)
     
-    # Проверяем кэш
     cached = get_cached_file(video_id, quality)
     
     if cached and cached.get('storage_message_id') and cached.get('storage_chat_id'):
         try:
-            progress.update_stage1(80, "Найдено в кэше! Пересылаю...")
-            await progress.update_message()
+            await update_progress(1, "Найдено в кэше!", 70, "Пересылаю из хранилища...")
+            await asyncio.sleep(0.5)
             
             await client.forward_messages(
                 entity=event.chat_id,
@@ -195,17 +239,26 @@ async def process_download(event, user_id, url, platform, video_id, quality):
             await client.send_message(event.chat_id, caption)
             update_downloads_count(video_id, quality)
             
-            progress.complete(file_size_mb=cached['file_size_mb'])
-            await progress.update_message()
-            await asyncio.sleep(1)
+            await update_progress(1, "Готово! Мгновенная отправка", 100, 
+                                f"✅ {cached['file_size_mb']:.1f} MB из кэша")
+            await asyncio.sleep(1.5)
             await event.delete()
             return
         except Exception as e:
             logger.warning(f"⚠️ Ошибка пересылки: {e}")
     
-    # Качаем заново
-    progress.update_stage1(30, "Начинаю загрузку...")
-    await progress.update_message()
+    # ============================================================
+    # ЭТАП 1: ПОЛУЧЕНИЕ ИНФОРМАЦИИ
+    # ============================================================
+    for i in range(2, 8):
+        if user_id in user_downloads and user_downloads[user_id].is_set():
+            await update_progress(1, "Отменено", 15, "🛑 Загрузка отменена")
+            return
+        percent = 15 + i * 2
+        await update_progress(1, "Получение информации", percent, "Загружаю метаданные видео...")
+        await asyncio.sleep(0.4)
+    
+    await update_progress(1, "Информация получена", 30, "Начинаю скачивание...")
     
     cancel_event = threading.Event()
     user_downloads[user_id] = cancel_event
@@ -213,18 +266,30 @@ async def process_download(event, user_id, url, platform, video_id, quality):
     try:
         loop = asyncio.get_event_loop()
         
+        # ============================================================
+        # ЭТАП 2: СКАЧИВАНИЕ
+        # ============================================================
+        await update_progress(2, "Скачивание видео", 30, "Устанавливаю соединение...")
+        
         def download_progress_callback(percent, speed, eta):
-            progress.update_download(percent, speed, eta)
-            asyncio.create_task(progress.update_message())
-        
-        # Завершаем этап 1
-        progress.update_stage1(100, "Информация получена")
-        await progress.update_message()
-        
-        # Этап 2: Скачивание
-        progress.stage = 2
-        progress.stage_progress = 0
-        await progress.update_message()
+            # Конвертируем 0-100% загрузки в 30-70% общего прогресса
+            mapped_percent = 30 + (percent * 40 / 100)
+            
+            extra = ""
+            if percent < 10:
+                extra = "Устанавливаю соединение с сервером..."
+            elif percent < 30:
+                extra = "Загружаю видеопоток..."
+            elif percent < 60:
+                extra = "Загружаю аудиопоток..."
+            elif percent < 90:
+                extra = "Объединяю видео и аудио..."
+            else:
+                extra = "Завершаю загрузку..."
+            
+            asyncio.create_task(
+                update_progress(2, "Скачивание", mapped_percent, extra, speed, eta)
+            )
         
         download_task = loop.run_in_executor(
             None, download_video, url, platform, quality, download_progress_callback, cancel_event
@@ -233,22 +298,21 @@ async def process_download(event, user_id, url, platform, video_id, quality):
         try:
             video_info = await asyncio.wait_for(download_task, timeout=DOWNLOAD_TIMEOUT)
         except asyncio.TimeoutError:
-            progress.cancel()
-            await progress.update_message()
+            await update_progress(2, "Таймаут", 30, "⏰ Загрузка заняла слишком много времени")
+            await asyncio.sleep(2)
             await event.edit("⏰ **Таймаут загрузки**\nПопробуйте другое качество")
             return
         
         if cancel_event.is_set() or video_info is None:
-            progress.cancel()
-            await progress.update_message()
+            await event.edit("🛑 **Загрузка отменена**")
             return
         
         # Проверка на слишком короткое видео
         if video_info.get('too_short'):
             duration = video_info.get('duration', 0)
             minutes, secs = divmod(duration, 60)
-            progress.cancel()
-            await progress.update_message()
+            await update_progress(2, "Видео пропущено", 70, f"⏱ Слишком короткое ({minutes}:{secs:02d})")
+            await asyncio.sleep(2)
             await event.edit(
                 f"⏱ **Видео слишком короткое!**\n\n"
                 f"📺 {video_info.get('fulltitle', video_info['title'])[:100]}\n"
@@ -269,39 +333,36 @@ async def process_download(event, user_id, url, platform, video_id, quality):
         is_audio = video_info['is_audio']
         thumb_path = video_info.get('thumb_path')
         duration = video_info.get('duration', 0)
+        video_title = video_info.get('fulltitle', video_info['title'])
         
         if file_size_mb > MAX_FILE_SIZE_MB:
-            progress.cancel()
-            await progress.update_message()
-            await event.edit(f"❌ **Слишком большой файл:** {file_size_mb:.1f} MB")
+            await update_progress(2, "Ошибка", 70, f"❌ Файл {file_size_mb:.1f} MB превышает лимит")
+            await asyncio.sleep(2)
+            await event.edit(f"❌ **Слишком большой файл:** {file_size_mb:.1f} MB\nМаксимум: {MAX_FILE_SIZE_MB} MB")
             try:
                 if os.path.exists(file_path): os.remove(file_path)
                 if thumb_path and os.path.exists(thumb_path): os.remove(thumb_path)
             except: pass
             return
         
-        # Этап 3: Отправка
-        progress.stage = 3
-        progress.stage_progress = 0
-        progress.update_upload(0, f"Подготовка к отправке...")
-        await progress.update_message()
-        
-        progress.set_title(video_info['title'])
+        # ============================================================
+        # ЭТАП 3: ОТПРАВКА
+        # ============================================================
+        await update_progress(3, "Отправка в Telegram", 70, "Сохраняю в хранилище...", 
+                            title=video_title)
         
         # Сохраняем в хранилище
         storage_message = None
         if storage_chat_id:
             try:
-                progress.update_upload(20, "Сохраняю в хранилище...")
-                await progress.update_message()
-                
-                storage_caption = f"[{quality_config['quality_label']}] {video_info['fulltitle'][:200]}\n{video_info['url']}"
+                storage_caption = f"[{quality_config['quality_label']}] {video_title[:200]}\n{url}"
                 
                 if is_audio:
                     storage_message = await client.send_file(
                         entity=storage_chat_id, file=file_path, caption=storage_caption,
                         attributes=[telethon.types.DocumentAttributeAudio(
-                            duration=duration, title=video_info.get('fulltitle', '')[:100],
+                            duration=duration if duration > 0 else 0,
+                            title=video_title[:100],
                             performer=video_info.get('uploader', 'Unknown'),
                         )],
                     )
@@ -311,7 +372,8 @@ async def process_download(event, user_id, url, platform, video_id, quality):
                         force_document=False,
                         thumb=thumb_path if thumb_path and os.path.exists(thumb_path) else None,
                         attributes=[telethon.types.DocumentAttributeVideo(
-                            duration=duration, w=video_info.get('width', 640),
+                            duration=duration if duration > 0 else 0,
+                            w=video_info.get('width', 640),
                             h=video_info.get('height', 360),
                             supports_streaming=True, round_message=False
                         )],
@@ -321,10 +383,9 @@ async def process_download(event, user_id, url, platform, video_id, quality):
             except Exception as e:
                 logger.error(f"❌ Ошибка сохранения в хранилище: {e}")
         
-        # Отправляем пользователю
-        progress.update_upload(50, "Отправляю вам...")
-        await progress.update_message()
+        await update_progress(3, "Отправка в Telegram", 80, "Отправляю вам...", title=video_title)
         
+        # Отправляем пользователю
         caption = format_caption(video_info, platform)
         
         if storage_message:
@@ -334,7 +395,8 @@ async def process_download(event, user_id, url, platform, video_id, quality):
             if is_audio:
                 await client.send_file(event.chat_id, file_path, caption=caption,
                     attributes=[telethon.types.DocumentAttributeAudio(
-                        duration=duration, title=video_info.get('fulltitle', video_info['title']),
+                        duration=duration if duration > 0 else 0,
+                        title=video_title,
                         performer=video_info.get('uploader', 'Unknown'),
                     )])
             else:
@@ -342,14 +404,14 @@ async def process_download(event, user_id, url, platform, video_id, quality):
                     force_document=False,
                     thumb=thumb_path if thumb_path and os.path.exists(thumb_path) else None,
                     attributes=[telethon.types.DocumentAttributeVideo(
-                        duration=duration, w=video_info.get('width', 640),
+                        duration=duration if duration > 0 else 0,
+                        w=video_info.get('width', 640),
                         h=video_info.get('height', 360),
                         supports_streaming=True, round_message=False
                     )],
                     supports_streaming=True)
         
-        progress.update_upload(90, "Почти готово...")
-        await progress.update_message()
+        await update_progress(3, "Завершение", 95, "Сохраняю в базу данных...", title=video_title)
         
         # Сохраняем в БД
         if storage_message:
@@ -360,13 +422,17 @@ async def process_download(event, user_id, url, platform, video_id, quality):
                 storage_message_id=storage_message.id,
                 file_size_mb=file_size_mb,
             )
+            logger.info(f"✅ Сохранено в БД: {video_title[:50]}... [{quality}]")
         
-        progress.complete(file_size_mb=file_size_mb)
-        await progress.update_message()
-        await asyncio.sleep(1.5)
+        # Финальный прогресс
+        total_time = (datetime.now() - start_time).total_seconds()
+        await update_progress(3, "Готово! ✅", 100, 
+                            f"{file_size_mb:.1f} MB за {total_time:.0f}с | {quality_config['description']}",
+                            title=video_title)
+        await asyncio.sleep(2)
         await event.delete()
         
-        # Чистим
+        # Чистим временные файлы
         try:
             if os.path.exists(file_path): os.remove(file_path)
             if thumb_path and os.path.exists(thumb_path): os.remove(thumb_path)
@@ -377,17 +443,21 @@ async def process_download(event, user_id, url, platform, video_id, quality):
             full_info = video_info.get('full_info', {})
             channel_id_db = full_info.get('channel_id', '')
             if channel_id_db:
-                await notify_subscribers(channel_id_db, video_info['title'], url)
+                await notify_subscribers(channel_id_db, video_title, url)
         except:
             pass
+        
+        logger.info(f"✅ УСПЕШНО: {video_title[:50]}... | {file_size_mb:.1f}MB | {quality} | {total_time:.1f}s")
     
     except Exception as e:
         if not cancel_event.is_set():
             logger.error(f"Ошибка: {str(e)[:200]}")
             await event.edit(f"❌ **Ошибка:** {str(e)[:200]}")
     finally:
-        if user_id in user_downloads: del user_downloads[user_id]
-        if user_id in user_selections: del user_selections[user_id]
+        if user_id in user_downloads: 
+            del user_downloads[user_id]
+        if user_id in user_selections: 
+            del user_selections[user_id]
 
 
 # ============================================================
@@ -454,7 +524,11 @@ async def stats_handler(event):
 @client.on(events.NewMessage(pattern='/monitor'))
 async def monitor_handler(event):
     await event.reply("🔍 **Проверяю каналы на новые видео...**")
-    new_videos = await check_all_channels(client, send_notifications=True)
+    new_videos = await check_all_channels(
+        bot_client=client,
+        send_notifications=True,
+        notify_callback=notify_subscribers
+    )
     if new_videos:
         text = f"✅ **Найдено {len(new_videos)} новых видео:**\n\n"
         for v in new_videos[:15]:
@@ -504,7 +578,6 @@ async def subscribe_handler(event):
     # Если это ссылка YouTube
     if 'youtube.com/' in channel_input or 'youtu.be/' in channel_input:
         try:
-            from downloader import get_video_info
             info = get_video_info(channel_input, 'youtube')
             if info:
                 channel_id = info.get('channel_id', '')
@@ -642,6 +715,24 @@ async def callback_handler(event):
     platform = selection['platform']
     video_id = selection['video_id']
     
+    quality_config = QUALITY_OPTIONS.get(quality, QUALITY_OPTIONS['360'])
+    platform_emoji = "📺" if platform == "youtube" else "🎵"
+    platform_name = "YouTube" if platform == "youtube" else "TikTok"
+    
+    # ============================================================
+    # ПОКАЗЫВАЕМ ПРОГРЕСС-БАР СРАЗУ ПОСЛЕ ВЫБОРА КАЧЕСТВА
+    # ============================================================
+    progress_text = (
+        f"{platform_emoji} **{platform_name}** | 📊 {quality_config['description']}\n\n"
+        f"🔗 {url}\n\n"
+        f"[░░░░░░░░░░░░░░░░░░░░] **0%**\n\n"
+        f"🔍 **Этап 1/3:** Подготовка...\n"
+        f"⏳ Запуск загрузки..."
+    )
+    
+    await event.edit(progress_text, buttons=None)
+    
+    # Запускаем загрузку с семафором
     async with download_semaphore:
         await process_download(event, user_id, url, platform, video_id, quality)
 
@@ -659,6 +750,7 @@ async def message_handler(event):
     if text.startswith('/'):
         return
     
+    # Кодовое слово для БД
     if text == '123455':
         await database_handler(event)
         return
