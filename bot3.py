@@ -1,4 +1,4 @@
-# bot.py - YouTube/TikTok Download Bot с кэшированием и БД
+# bot.py - YouTube/TikTok Download Bot с кэшированием через БД
 import os
 import asyncio
 import re
@@ -41,8 +41,9 @@ logger = console_logger.get_logger()
 
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 
-# Инициализируем БД
+# Инициализируем БД при запуске
 init_database()
+logger.info("🗄 База данных инициализирована")
 
 client = TelegramClient('bot_session', API_ID, API_HASH)
 
@@ -173,15 +174,12 @@ def detect_platform(url: str) -> Tuple[Optional[str], Optional[str], Optional[st
 
 
 def download_video_sync(url: str, platform: str, quality: str, cancel_event: threading.Event) -> Optional[dict]:
-    """
-    Получает информацию И скачивает видео после выбора качества.
-    """
+    """Получает информацию И скачивает видео после выбора качества."""
     if cancel_event.is_set():
         logger.info("🛑 Загрузка отменена до начала")
         return None
     
     quality_config = QUALITY_OPTIONS.get(quality, QUALITY_OPTIONS['360'])
-    
     logger.info(f"⬇️ Скачиваю: {quality_config['description']}")
     
     if cancel_event.is_set():
@@ -202,31 +200,19 @@ def download_video_sync(url: str, platform: str, quality: str, cancel_event: thr
         if ARIA2_AVAILABLE:
             logger.info("🚀 aria2c: 16 потоков")
             ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'socket_timeout': 30,
-                'retries': 5,
-                'fragment_retries': 5,
-                'skip_unavailable_fragments': True,
+                'quiet': True, 'no_warnings': True, 'socket_timeout': 30,
+                'retries': 5, 'fragment_retries': 5, 'skip_unavailable_fragments': True,
                 'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
                 'external_downloader': 'aria2c',
                 'external_downloader_args': [
                     '-x', '16', '-s', '16', '-k', '1M',
-                    '--max-connection-per-server=16',
-                    '--min-split-size=1M',
-                    '--file-allocation=none',
-                    '--async-dns=true',
-                    '--max-tries=5',
-                    '--retry-wait=1',
+                    '--max-connection-per-server=16', '--min-split-size=1M',
+                    '--file-allocation=none', '--async-dns=true',
+                    '--max-tries=5', '--retry-wait=1',
                 ],
                 'format': format_str,
                 'cookiefile': COOKIES_FILE if cookies_exists else None,
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': 'android,web',
-                        'player_skip': [],
-                    }
-                },
+                'extractor_args': {'youtube': {'player_client': 'android,web', 'player_skip': []}},
                 'remote_components': ['ejs:github'],
                 'youtube_include_hls_manifest': False,
                 'youtube_include_dash_manifest': True,
@@ -239,24 +225,13 @@ def download_video_sync(url: str, platform: str, quality: str, cancel_event: thr
         else:
             logger.info("⚡ Встроенный загрузчик")
             ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'socket_timeout': 30,
-                'retries': 5,
-                'fragment_retries': 5,
-                'skip_unavailable_fragments': True,
+                'quiet': True, 'no_warnings': True, 'socket_timeout': 30,
+                'retries': 5, 'fragment_retries': 5, 'skip_unavailable_fragments': True,
                 'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
-                'concurrent_fragment_downloads': 16,
-                'buffersize': 2 * 1024 * 1024,
-                'http_chunk_size': 20 * 1024 * 1024,
-                'format': format_str,
+                'concurrent_fragment_downloads': 16, 'buffersize': 2 * 1024 * 1024,
+                'http_chunk_size': 20 * 1024 * 1024, 'format': format_str,
                 'cookiefile': COOKIES_FILE if cookies_exists else None,
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': 'android,web',
-                        'player_skip': [],
-                    }
-                },
+                'extractor_args': {'youtube': {'player_client': 'android,web', 'player_skip': []}},
                 'remote_components': ['ejs:github'],
                 'youtube_include_hls_manifest': False,
                 'youtube_include_dash_manifest': True,
@@ -268,11 +243,7 @@ def download_video_sync(url: str, platform: str, quality: str, cancel_event: thr
             }
         
         if is_audio:
-            ydl_opts['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }]
+            ydl_opts['postprocessors'] = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}]
             ydl_opts['merge_output_format'] = None
             ydl_opts['postprocessor_args'] = []
             ydl_opts['prefer_ffmpeg'] = True
@@ -284,44 +255,26 @@ def download_video_sync(url: str, platform: str, quality: str, cancel_event: thr
     else:  # TikTok
         if ARIA2_AVAILABLE:
             ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'socket_timeout': 30,
-                'retries': 3,
-                'format': format_str,
+                'quiet': True, 'no_warnings': True, 'socket_timeout': 30,
+                'retries': 3, 'format': format_str,
                 'outtmpl': f'{DOWNLOAD_FOLDER}/%(uploader)s_%(title).100s_%(id)s.%(ext)s',
                 'external_downloader': 'aria2c',
                 'external_downloader_args': ['-x', '8', '-s', '8', '-k', '1M', '--file-allocation=none'],
-                'extractor_args': {
-                    'tiktok': {'api_hostname': 'api16-normal-c-useast1a.tiktokv.com'}
-                },
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                }
+                'extractor_args': {'tiktok': {'api_hostname': 'api16-normal-c-useast1a.tiktokv.com'}},
+                'http_headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
             }
         else:
             ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'socket_timeout': 30,
-                'retries': 3,
-                'format': format_str,
+                'quiet': True, 'no_warnings': True, 'socket_timeout': 30,
+                'retries': 3, 'format': format_str,
                 'outtmpl': f'{DOWNLOAD_FOLDER}/%(uploader)s_%(title).100s_%(id)s.%(ext)s',
                 'concurrent_fragment_downloads': 8,
-                'extractor_args': {
-                    'tiktok': {'api_hostname': 'api16-normal-c-useast1a.tiktokv.com'}
-                },
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                }
+                'extractor_args': {'tiktok': {'api_hostname': 'api16-normal-c-useast1a.tiktokv.com'}},
+                'http_headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
             }
         
         if is_audio:
-            ydl_opts['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }]
+            ydl_opts['postprocessors'] = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}]
     
     try:
         def progress_hook(d):
@@ -331,10 +284,8 @@ def download_video_sync(url: str, platform: str, quality: str, cancel_event: thr
                     percent = float(percent_str) if percent_str else 0
                     speed = d.get('_speed_str', '')
                     eta = d.get('_eta_str', '')
-                    
                     if cancel_event.is_set():
                         raise Exception("DOWNLOAD_CANCELLED")
-                    
                     console_logger.download_progress(percent, speed=speed, eta=eta)
                 except Exception as e:
                     if str(e) == "DOWNLOAD_CANCELLED":
@@ -353,16 +304,13 @@ def download_video_sync(url: str, platform: str, quality: str, cancel_event: thr
                 return None
             
             total_time = time.time() - start_time
-            
             actual_format = info.get('format_id', '?')
             actual_height = info.get('height', 0)
             
             logger.info(f"⏱ Общее время: {total_time:.1f}с")
-            logger.info(f"📊 Запрошено: {quality_config['description']}")
-            logger.info(f"📊 Получено: {actual_format} | height={actual_height}")
+            logger.info(f"📊 Запрошено: {quality_config['description']} | Получено: {actual_format} (height={actual_height})")
             
             file_path = ydl.prepare_filename(info)
-            
             if is_audio:
                 file_path = os.path.splitext(file_path)[0] + '.mp3'
             
@@ -386,9 +334,8 @@ def download_video_sync(url: str, platform: str, quality: str, cancel_event: thr
                         file_path = possible[0]
                         if is_audio:
                             import shutil
-                            mp3_path = os.path.splitext(file_path)[0] + '.mp3'
-                            shutil.move(file_path, mp3_path)
-                            file_path = mp3_path
+                            shutil.move(file_path, os.path.splitext(file_path)[0] + '.mp3')
+                            file_path = os.path.splitext(file_path)[0] + '.mp3'
                     else:
                         logger.error(f"Файл не найден!")
                         return None
@@ -396,24 +343,17 @@ def download_video_sync(url: str, platform: str, quality: str, cancel_event: thr
             file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
             download_speed = file_size_mb / total_time if total_time > 0 else 0
             
-            logger.info(f"📁 Файл: {os.path.basename(file_path)}")
-            logger.info(f"💾 Размер: {file_size_mb:.1f} MB")
-            logger.info(f"⚡ Скорость: {download_speed:.2f} MB/s")
+            logger.info(f"📁 Файл: {os.path.basename(file_path)} | 💾 {file_size_mb:.1f} MB | ⚡ {download_speed:.2f} MB/s")
             
             duration = info.get('duration', 0)
             if duration:
                 duration = int(duration)
             
             if not is_audio:
-                width = info.get('width', quality_config['resolution'][0] if quality_config['resolution'] else 640)
-                height = info.get('height', quality_config['resolution'][1] if quality_config['resolution'] else 360)
-                if not width:
-                    width = quality_config['resolution'][0] if quality_config['resolution'] else 640
-                if not height:
-                    height = quality_config['resolution'][1] if quality_config['resolution'] else 360
+                width = info.get('width') or quality_config['resolution'][0] or 640
+                height = info.get('height') or quality_config['resolution'][1] or 360
             else:
-                width = 0
-                height = 0
+                width, height = 0, 0
             
             thumb_path = None
             if not is_audio:
@@ -422,7 +362,6 @@ def download_video_sync(url: str, platform: str, quality: str, cancel_event: thr
                 elif platform == 'tiktok':
                     thumb_path = download_thumbnail_tiktok(info.get('thumbnail', ''), info.get('id', ''))
             
-            # Формируем полный info для БД
             full_info = {
                 'title': info.get('title', 'Видео'),
                 'fulltitle': info.get('fulltitle', info.get('title', 'Видео')),
@@ -441,8 +380,8 @@ def download_video_sync(url: str, platform: str, quality: str, cancel_event: thr
                 'tags': info.get('tags', []),
                 'categories': info.get('categories', []),
                 'url': url,
-                'width': int(width) if width else 0,
-                'height': int(height) if height else 0,
+                'width': int(width),
+                'height': int(height),
                 'format_id': actual_format,
             }
             
@@ -454,14 +393,12 @@ def download_video_sync(url: str, platform: str, quality: str, cancel_event: thr
                 'duration': duration,
                 'file_path': file_path,
                 'file_size_mb': file_size_mb,
-                'url': url,
-                'platform': platform,
+                'url': url, 'platform': platform,
                 'quality': quality_config['description'],
                 'quality_code': quality,
                 'actual_height': actual_height,
                 'is_audio': is_audio,
-                'width': int(width) if width else 640,
-                'height': int(height) if height else 360,
+                'width': int(width), 'height': int(height),
                 'thumb_path': thumb_path,
                 'view_count': full_info['view_count'],
                 'like_count': full_info['like_count'],
@@ -559,8 +496,6 @@ async def start_handler(event):
     
     cookies_status = "✅ Cookies" if os.path.exists(COOKIES_FILE) else "⚠️ Без cookies"
     aria_status = "🚀 aria2c" if ARIA2_AVAILABLE else "⚡ Встроенный"
-    
-    # Статистика из БД
     stats = get_stats()
     
     welcome = (
@@ -570,14 +505,14 @@ async def start_handler(event):
         "1️⃣ Отправляешь ссылку\n"
         "2️⃣ Мгновенно появляются кнопки\n"
         "3️⃣ Выбираешь качество — я качаю\n"
-        "4️⃣ Если видео уже скачано — отправлю мгновенно!\n\n"
+        "4️⃣ Если уже скачано — отправлю мгновенно!\n\n"
         f"📺 **YouTube:** 360p | 480p | 720p | 1080p | MP3\n"
         f"🎵 **TikTok:** 360p | 480p | 720p | 1080p | MP3\n"
         f"• {aria_status}\n"
         f"• {cookies_status}\n"
         f"• 🖼 С превью\n"
         f"• ⚡ Кэш: {stats['total_videos']} видео ({stats['total_files']} файлов)\n\n"
-        "⚠️ Макс. 2GB | /stats | /cancel"
+        "⚠️ Макс. 2GB | /stats | /database | /cancel"
     )
     
     await event.reply(welcome)
@@ -603,12 +538,6 @@ async def stats_handler(event):
             text += f"• {platform}: {count}\n"
         text += "\n"
     
-    if stats['quality_stats']:
-        text += "📊 **По качеству:**\n"
-        for quality, count, size in stats['quality_stats']:
-            text += f"• {quality}: {count} шт. ({size:.1f} MB)\n"
-        text += "\n"
-    
     if stats['top_downloads']:
         text += "🏆 **Топ-5 по пересылкам:**\n"
         for i, (title, quality, count, url) in enumerate(stats['top_downloads'][:5], 1):
@@ -616,6 +545,44 @@ async def stats_handler(event):
             text += f"{i}. {short_title} [{quality}] - {count} раз\n"
     
     await event.reply(text)
+
+
+@client.on(events.NewMessage(pattern='/database'))
+async def database_handler(event):
+    """Отправляет файл базы данных"""
+    user_id = event.sender_id
+    
+    logger.info(f"📁 Запрос БД от {user_id}")
+    
+    if not os.path.exists(DB_PATH):
+        await event.reply("❌ **База данных не найдена**")
+        return
+    
+    db_size_mb = os.path.getsize(DB_PATH) / (1024 * 1024)
+    
+    # Получаем статистику для подписи
+    stats = get_stats()
+    
+    caption = (
+        f"🗄 **База данных бота**\n\n"
+        f"📊 **Статистика:**\n"
+        f"• Каналов: {stats['total_channels']}\n"
+        f"• Видео: {stats['total_videos']}\n"
+        f"• Файлов: {stats['total_files']}\n"
+        f"• Пересылок: {stats['total_downloads']}\n"
+        f"💾 **Размер:** {db_size_mb:.2f} MB\n"
+        f"📅 **Обновлена:** {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
+    )
+    
+    await client.send_file(
+        entity=event.chat_id,
+        file=DB_PATH,
+        caption=caption,
+        filename=f"video_cache_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db",
+        part_size_kb=512,
+    )
+    
+    logger.info(f"✅ БД отправлена пользователю {user_id} (размер: {db_size_mb:.2f} MB)")
 
 
 @client.on(events.NewMessage(pattern='/cancel'))
@@ -627,32 +594,6 @@ async def cancel_handler(event):
         logger.info(f"🛑 Пользователь {user_id} отменил загрузку")
     else:
         await event.reply("ℹ️ Нет активных загрузок")
-
-
-@client.on(events.NewMessage(pattern='/search'))
-async def search_handler(event):
-    """Поиск по кэшу"""
-    text = event.text.replace('/search', '').strip()
-    if not text:
-        await event.reply("ℹ️ Использование: /search <запрос>")
-        return
-    
-    results = search_videos(text, limit=10)
-    if not results:
-        await event.reply(f"🔍 По запросу \"{text}\" ничего не найдено")
-        return
-    
-    response = f"🔍 **Результаты поиска:** \"{text}\"\n\n"
-    for row in results:
-        title = row[4][:50] + '...' if len(row[4]) > 50 else row[4]
-        views = row[9] or 0
-        qualities = row[-1] or 'нет'
-        response += f"📺 {title}\n   👁 {views:,} | 📊 {qualities}\n\n"
-    
-    if len(response) > 4000:
-        response = response[:3997] + '...'
-    
-    await event.reply(response)
 
 
 # ============================================================
@@ -686,20 +627,25 @@ async def callback_handler(event):
     
     console_logger.separator(f"ЗАПРОС от {user_id}")
     logger.info(f"🌐 {platform.upper()} | 📊 {quality_config['description']}")
-    logger.info(f"🔗 {url}")
+    logger.info(f"🔗 {url} | ID: {video_id}")
     
     # ============================================================
-    # ПРОВЕРЯЕМ КЭШ
+    # ШАГ 1: ПРОВЕРЯЕМ КЭШ В БД
     # ============================================================
+    logger.info(f"🔍 Проверяю кэш для video_id={video_id}, quality={quality}...")
     cached = get_cached_file(video_id, quality)
     
     if cached:
-        logger.info(f"⚡ Найдено в кэше! Отправляю мгновенно...")
+        # ============================================================
+        # НАЙДЕНО В КЭШЕ - ОТПРАВЛЯЕМ МГНОВЕННО
+        # ============================================================
+        logger.info(f"⚡ НАЙДЕНО В КЭШЕ! Отправляю мгновенно (file_id: {cached['telegram_file_id'][:30]}...)")
         
         await event.edit(
             f"🎯 **Найдено в кэше!**\n"
             f"📤 Отправляю мгновенно...\n"
-            f"📊 {cached['quality_label']} | 💾 {cached['file_size_mb']:.1f} MB",
+            f"📊 {cached['quality_label']} | 💾 {cached['file_size_mb']:.1f} MB\n"
+            f"🔄 Скачано ранее: {cached['downloads_count']} раз(а)",
             buttons=None
         )
         
@@ -751,15 +697,17 @@ async def callback_handler(event):
                 allow_cache=True,
             )
         
+        # Обновляем счётчик
         update_downloads_count(video_id, quality)
         await event.delete()
         
-        logger.info(f"⚡ Мгновенно из кэша: {cached['title'][:50]}... | {cached['quality_label']}")
+        logger.info(f"⚡ Мгновенно из кэша: {cached['title'][:50]}... | {cached['quality_label']} | пересылка №{cached['downloads_count']+1}")
         return
     
     # ============================================================
-    # НЕТ В КЭШЕ - КАЧАЕМ
+    # ШАГ 2: НЕТ В КЭШЕ - КАЧАЕМ ЗАНОВО
     # ============================================================
+    logger.info(f"🆕 Видео НЕ в кэше. Начинаю загрузку...")
     
     await event.edit(
         f"🔄 **Загружаю...**\n"
@@ -849,11 +797,13 @@ async def callback_handler(event):
             )
         
         # ============================================================
-        # СОХРАНЯЕМ В БД
+        # СОХРАНЯЕМ В БД ПОСЛЕ ОТПРАВКИ
         # ============================================================
         if sent_message.media and hasattr(sent_message.media, 'document'):
             file_id = sent_message.media.document.id
             file_unique_id = sent_message.media.document.file_unique_id
+            
+            logger.info(f"💾 Сохраняю в БД: video_id={video_id}, quality={quality}")
             
             save_complete_info(
                 video_id=video_id,
@@ -865,7 +815,9 @@ async def callback_handler(event):
                 file_size_mb=file_size_mb,
             )
             
-            logger.info(f"💾 Сохранено в БД: {video_info['title'][:50]}... [{quality}]")
+            logger.info(f"✅ Сохранено в БД: {video_info['title'][:50]}... [{quality}] | file_id={file_id[:30]}...")
+        else:
+            logger.error(f"❌ Не удалось получить file_id из отправленного сообщения!")
         
         total_time = (datetime.now() - start_time).total_seconds()
         await event.delete()
@@ -906,6 +858,11 @@ async def message_handler(event):
     if text.startswith('/'):
         return
     
+    # Проверяем, не запрос ли это файла БД (по кодовому слову)
+    if text == '123455':
+        await database_handler(event)
+        return
+    
     platform, clean_url, video_id = detect_platform(text)
     
     if not platform:
@@ -941,7 +898,7 @@ async def message_handler(event):
     if cached_qualities:
         quality_text += "⚡ **В кэше:**\n"
         for q in cached_qualities:
-            quality_text += f"• {q['label']}: {q['size_mb']:.1f} MB\n"
+            quality_text += f"• {q['label']}: {q['size_mb']:.1f} MB (скачано {q['downloads']} раз)\n"
         quality_text += "\n"
     
     quality_text += "🎯 **Выберите качество:**"
@@ -980,6 +937,7 @@ async def main():
     logger.info(f"🍪 Cookies: {'загружены' if os.path.exists(COOKIES_FILE) else 'НЕТ'}")
     logger.info(f"🚀 aria2c: {'16 потоков' if ARIA2_AVAILABLE else 'встроенный загрузчик'}")
     logger.info(f"📤 Отправка: стриминг + полный экран + превью")
+    logger.info(f"💾 БД: {DB_PATH}")
     
     await client.start(bot_token=BOT_TOKEN)
     me = await client.get_me()
@@ -995,7 +953,7 @@ async def main():
     print(f"  🗄 БД: {stats['total_videos']} видео | {stats['total_files']} файлов")
     print(f"  ⚡ Кэш: Telegram file_id")
     print(f"  🍪 Cookies: {'✅ Да' if os.path.exists(COOKIES_FILE) else '❌ Нет'}")
-    print(f"  /stats | /search | /cancel")
+    print(f"  /stats | /database | 123455 | /cancel")
     print("=" * 60)
     print()
     
