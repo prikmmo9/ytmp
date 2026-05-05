@@ -16,12 +16,17 @@ from logger_config import create_logger
 # КОНФИГУРАЦИЯ
 # ============================================================
 API_ID = int(os.getenv('API_ID', '22268845'))
-API_HASH = os.getenv('API_HASH', 'ffbeffdfb86784e12b39aea5f53857d2')
+API_HASH = os.getenv('API_HASH', 'ffbeffdfb86784e12b39aea5f53857d2'))
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8566350925:AAEOwpPgXhmR3SE_7TapSbzMJnqImnMA-Js')
 
 DOWNLOAD_FOLDER = 'downloads'
 MAX_FILE_SIZE_MB = 2000
 DOWNLOAD_TIMEOUT = 600
+
+# Путь к файлу cookies (если есть)
+COOKIES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookie.txt')
+if not os.path.exists(COOKIES_FILE):
+    COOKIES_FILE = None
 
 # Создаем консольный логгер
 console_logger = create_logger(
@@ -105,17 +110,46 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
     # ============================================================
     
     if platform == 'youtube':
+        # Базовые опции для YouTube
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 30,
+            'retries': 3,
+            'fragment_retries': 3,
+            'skip_unavailable_fragments': True,
+            'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
+            'merge_output_format': 'mp4',
+            'format': '134+140/18',
+            # === COOKIES ===
+            'cookiefile': COOKIES_FILE,
+            # === ОПТИМИЗАЦИЯ ===
+            'extractor_args': {
+                'youtube': {
+                    'player_client': 'android',
+                    'player_skip': ['web', 'web_safari'],
+                }
+            },
+            'remote_components': ['ejs:github'],
+            'youtube_include_hls_manifest': False,
+            'youtube_include_dash_manifest': False,
+            # === УСКОРЕНИЕ FFMPEG ===
+            'postprocessor_args': [
+                '-c', 'copy',
+                '-movflags', '+faststart'
+            ],
+            'prefer_ffmpeg': True,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept-Language': 'en-US,en;q=0.9',
+            }
+        }
+        
         if ARIA2_AVAILABLE:
             logger.info("🚀 aria2c: 16 потоков")
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'socket_timeout': 30,
-                'retries': 3,
-                'fragment_retries': 3,
-                'skip_unavailable_fragments': True,
-                'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
-                'merge_output_format': 'mp4',
+            if COOKIES_FILE:
+                logger.info("🍪 Используются cookies для авторизации")
+            ydl_opts.update({
                 'external_downloader': 'aria2c',
                 'external_downloader_args': [
                     '-x', '16', '-s', '16', '-k', '1M',
@@ -126,104 +160,43 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
                     '--max-tries=5',
                     '--retry-wait=1',
                 ],
-                'format': '134+140/18',
-                # === ОПТИМИЗАЦИЯ ИЗВЛЕЧЕНИЯ ===
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': 'android',
-                        'player_skip': ['web', 'web_safari'],
-                    }
-                },
-                'remote_components': ['ejs:github'],
-                'youtube_include_hls_manifest': False,
-                'youtube_include_dash_manifest': False,
-                # === УСКОРЕНИЕ FFMPEG ===
-                'postprocessor_args': [
-                    '-c', 'copy',
-                    '-movflags', '+faststart'
-                ],
-                'prefer_ffmpeg': True,
-                # ============================
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                }
-            }
+            })
         else:
             logger.info("⚡ Встроенный загрузчик")
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'socket_timeout': 30,
-                'retries': 3,
-                'fragment_retries': 3,
-                'skip_unavailable_fragments': True,
-                'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
-                'merge_output_format': 'mp4',
+            ydl_opts.update({
                 'concurrent_fragment_downloads': 16,
                 'buffersize': 2 * 1024 * 1024,
                 'http_chunk_size': 20 * 1024 * 1024,
-                'format': '134+140/18',
-                # === ОПТИМИЗАЦИЯ ИЗВЛЕЧЕНИЯ ===
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': 'android',
-                        'player_skip': ['web', 'web_safari'],
-                    }
-                },
-                'remote_components': ['ejs:github'],
-                'youtube_include_hls_manifest': False,
-                'youtube_include_dash_manifest': False,
-                # === УСКОРЕНИЕ FFMPEG ===
-                'postprocessor_args': [
-                    '-c', 'copy',
-                    '-movflags', '+faststart'
-                ],
-                'prefer_ffmpeg': True,
-                # ============================
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                }
-            }
+            })
+            
     elif platform == 'tiktok':
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 30,
+            'retries': 3,
+            'format': 'best[ext=mp4]/best',
+            'outtmpl': f'{DOWNLOAD_FOLDER}/%(uploader)s_%(title).100s_%(id)s.%(ext)s',
+            'postprocessors': [],
+            'prefer_ffmpeg': False,
+            'merge_output_format': None,
+            'extractor_args': {
+                'tiktok': {'api_hostname': 'api16-normal-c-useast1a.tiktokv.com'}
+            },
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            }
+        }
+        
         if ARIA2_AVAILABLE:
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'socket_timeout': 30,
-                'retries': 3,
-                'format': 'best[ext=mp4]/best',
-                'outtmpl': f'{DOWNLOAD_FOLDER}/%(uploader)s_%(title).100s_%(id)s.%(ext)s',
-                'postprocessors': [],
-                'prefer_ffmpeg': False,
-                'merge_output_format': None,
+            ydl_opts.update({
                 'external_downloader': 'aria2c',
                 'external_downloader_args': ['-x', '8', '-s', '8', '-k', '1M', '--file-allocation=none'],
-                'extractor_args': {
-                    'tiktok': {'api_hostname': 'api16-normal-c-useast1a.tiktokv.com'}
-                },
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                }
-            }
+            })
         else:
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'socket_timeout': 30,
-                'retries': 3,
-                'format': 'best[ext=mp4]/best',
-                'outtmpl': f'{DOWNLOAD_FOLDER}/%(uploader)s_%(title).100s_%(id)s.%(ext)s',
-                'postprocessors': [],
-                'prefer_ffmpeg': False,
-                'merge_output_format': None,
+            ydl_opts.update({
                 'concurrent_fragment_downloads': 8,
-                'extractor_args': {
-                    'tiktok': {'api_hostname': 'api16-normal-c-useast1a.tiktokv.com'}
-                },
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                }
-            }
+            })
     else:
         logger.error(f"Неизвестная платформа: {platform}")
         return None
@@ -251,6 +224,8 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
         ydl_opts['progress_hooks'] = [progress_hook]
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Извлекаем информацию И скачиваем за один раз
+            logger.info(f"🔍 Извлекаем информацию (cookies: {'да' if COOKIES_FILE else 'нет'})...")
             info = ydl.extract_info(url, download=True)
             
             if not info:
@@ -340,13 +315,16 @@ async def start_handler(event):
     
     logger.info(f"📱 /start от {user_name}")
     
+    cookies_status = "✅ Cookies загружены" if COOKIES_FILE else "⚠️ Без cookies (медленнее)"
+    
     welcome = (
         f"🎬 **Привет, {user_name}!**\n\n"
         "Я - Media Download Bot! 🤖\n\n"
         "⚡ **Мгновенная загрузка видео!**\n"
         f"• 📺 YouTube: 360p (AVC mp4)\n"
         f"• 🎵 TikTok: лучшее качество\n"
-        f"• {'🚀 aria2c 16 потоков' if ARIA2_AVAILABLE else '⚡ Оптимизированная загрузка'}\n\n"
+        f"• {'🚀 aria2c 16 потоков' if ARIA2_AVAILABLE else '⚡ Оптимизированная загрузка'}\n"
+        f"• {cookies_status}\n\n"
         "**Как использовать:**\n"
         "Просто отправь мне ссылку на видео!\n\n"
         "**Поддерживаемые платформы:**\n"
@@ -525,6 +503,7 @@ async def main():
     logger.info(f"📺 YouTube: ФОРМАТ 134+140 (360p AVC mp4 + AAC m4a)")
     logger.info(f"🎵 TikTok: лучшее качество")
     logger.info(f"⚡ ОДИН вызов yt-dlp (информация + скачивание)")
+    logger.info(f"🍪 Cookies: {'загружены' if COOKIES_FILE else 'НЕТ (медленнее)'}")
     logger.info(f"🚀 Оптимизация: EJS компоненты, без HLS/DASH манифестов, Android клиент")
     logger.info(f"🎬 FFmpeg: copy-режим + faststart для стриминга")
     
@@ -543,6 +522,7 @@ async def main():
     print(f"  🤖 БОТ: @{me.username}")
     print(f"  📺 YouTube: 360p AVC (134+140)")
     print(f"  ⚡ Оптимизированная загрузка")
+    print(f"  🍪 Cookies: {'✅ Да' if COOKIES_FILE else '❌ Нет'}")
     print(f"  🚫 /cancel для отмены")
     print("=" * 60)
     print()
