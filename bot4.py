@@ -1,6 +1,7 @@
 # bot.py - Основной файл бота
 import os
 import asyncio
+import logging  # ← Добавить!
 import threading
 from datetime import datetime
 
