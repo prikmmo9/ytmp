@@ -16,7 +16,7 @@ from logger_config import create_logger
 # КОНФИГУРАЦИЯ
 # ============================================================
 API_ID = int(os.getenv('API_ID', '22268845'))
-API_HASH = os.getenv('API_HASH', 'ffbeffdfb86784e12b39aea5f53857d2')
+API_HASH = os.getenv('API_HASH', 'ffbeffdfb86784e12b39aea5f53857d2'))
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8566350925:AAEOwpPgXhmR3SE_7TapSbzMJnqImnMA-Js')
 
 DOWNLOAD_FOLDER = 'downloads'
@@ -77,33 +77,115 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
     
     if platform == 'youtube':
         # ============================================================
-        # ПРОБУЕМ РАЗНЫЕ ФОРМАТЫ ДЛЯ МАКСИМАЛЬНОЙ СКОРОСТИ
+        # СТРАТЕГИЯ: ПРОБУЕМ ВСЕ БЫСТРЫЕ ФОРМАТЫ КРОМЕ 18
         # ============================================================
         
-        # Пробуем НАТИВНЫЙ загрузчик (не aria2c)
-        # Иногда встроенный загрузчик быстрее!
-        logger.info("⚡ Встроенный загрузчик (нативный)")
+        # Форматы для попыток (от лучшего к запасному):
+        # 22 - 720p mp4 (готовый, с аудио) - обычно БЫСТРЫЙ
+        # 136+140 - 720p AVC mp4 + AAC audio
+        # 135+140 - 480p AVC mp4 + AAC audio  
+        # 134+140 - 360p AVC mp4 + AAC audio
+        # 133+140 - 240p AVC mp4 + AAC audio
         
+        logger.info("⚡ Поиск быстрого формата (НЕ 18)...")
+        
+        # Сначала получаем инфо для проверки доступных форматов
+        info_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'skip_download': True,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            }
+        }
+        
+        try:
+            with yt_dlp.YoutubeDL(info_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                
+                if not info:
+                    logger.error("Не удалось получить информацию")
+                    return None
+                
+                # Проверяем наличие форматов
+                available_formats = []
+                if 'formats' in info:
+                    for f in info['formats']:
+                        available_formats.append(f.get('format_id', ''))
+                
+                logger.info(f"Доступные форматы: {', '.join(available_formats[:20])}")
+                
+                # Определяем ЦЕЛЕВОЙ формат
+                target_format = None
+                
+                # Приоритет 1: Формат 22 (720p готовый mp4)
+                if '22' in available_formats:
+                    target_format = '22'
+                    logger.info("🎯 Выбран формат 22 (720p готовый mp4)")
+                # Приоритет 2: 136+140 (720p AVC + audio)
+                elif '136' in available_formats and '140' in available_formats:
+                    target_format = '136+140'
+                    logger.info("🎯 Выбран формат 136+140 (720p AVC + AAC)")
+                # Приоритет 3: 135+140 (480p AVC + audio)
+                elif '135' in available_formats and '140' in available_formats:
+                    target_format = '135+140'
+                    logger.info("🎯 Выбран формат 135+140 (480p AVC + AAC)")
+                # Приоритет 4: 134+140 (360p AVC + audio)
+                elif '134' in available_formats and '140' in available_formats:
+                    target_format = '134+140'
+                    logger.info("🎯 Выбран формат 134+140 (360p AVC + AAC)")
+                # Приоритет 5: 133+140 (240p AVC + audio)
+                elif '133' in available_formats and '140' in available_formats:
+                    target_format = '133+140'
+                    logger.info("🎯 Выбран формат 133+140 (240p AVC + AAC)")
+                else:
+                    # Если ничего не подходит - ищем ЛЮБОЙ mp4 кроме 18
+                    for f in info.get('formats', []):
+                        fid = f.get('format_id', '')
+                        if fid != '18' and f.get('ext') == 'mp4' and f.get('acodec') != 'none':
+                            target_format = fid
+                            logger.info(f"🎯 Выбран запасной формат: {fid} ({f.get('format_note', '')})")
+                            break
+                
+                if not target_format:
+                    logger.error("Нет подходящих форматов!")
+                    return None
+                
+        except Exception as e:
+            logger.error(f"Ошибка получения форматов: {e}")
+            # Запасной вариант
+            target_format = '22/136+140/135+140/134+140'
+        
+        if cancel_event.is_set():
+            logger.info("🛑 Отменено")
+            return None
+        
+        # Опции для скачивания
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
             'socket_timeout': 30,
-            'retries': 3,
-            'fragment_retries': 3,
+            'retries': 5,
+            'fragment_retries': 5,
             'skip_unavailable_fragments': True,
             'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
             'merge_output_format': 'mp4',
-            # ВАЖНО: отключаем aria2c ВООБЩЕ
-            'external_downloader': None,
-            # Настройки для нативного загрузчика
+            # ЖЁСТКО задаём формат
+            'format': target_format,
+            # Нативный загрузчик с большими буферами
             'concurrent_fragment_downloads': 16,
-            'buffersize': 10 * 1024 * 1024,  # 10MB буфер
-            'http_chunk_size': 50 * 1024 * 1024,  # 50MB чанки
-            # Пробуем формат 22 (720p готовый mp4) - иногда он быстрее!
-            'format': '22/18/134+140/best[height<=480][ext=mp4]/best',
+            'buffersize': 10 * 1024 * 1024,  # 10MB
+            'http_chunk_size': 100 * 1024 * 1024,  # 100MB чанки!
+            # Прокси для обхода троттлинга (если есть)
+            # 'proxy': 'socks5://127.0.0.1:9050',  # Раскомментируйте если есть прокси
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            }
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+            },
+            # Отключаем всё лишнее
+            'no_check_certificate': True,
         }
         
     elif platform == 'tiktok':
@@ -111,7 +193,7 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
             'quiet': True,
             'no_warnings': True,
             'socket_timeout': 30,
-            'retries': 3,
+            'retries': 5,
             'format': 'best[ext=mp4]/best',
             'outtmpl': f'{DOWNLOAD_FOLDER}/%(uploader)s_%(title).100s_%(id)s.%(ext)s',
             'postprocessors': [],
@@ -119,7 +201,7 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
             'merge_output_format': None,
             'concurrent_fragment_downloads': 8,
             'buffersize': 10 * 1024 * 1024,
-            'http_chunk_size': 50 * 1024 * 1024,
+            'http_chunk_size': 100 * 1024 * 1024,
             'extractor_args': {
                 'tiktok': {'api_hostname': 'api16-normal-c-useast1a.tiktokv.com'}
             },
@@ -149,38 +231,10 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
                         raise
                     pass
             elif d['status'] == 'finished':
-                logger.info(f"✅ Готово: {os.path.basename(d.get('filename', 'unknown'))}")
+                logger.info(f"✅ Часть загружена: {os.path.basename(d.get('filename', 'unknown'))}")
         
         ydl_opts['progress_hooks'] = [progress_hook]
         
-        # Пробуем сначала БЫСТРО получить инфо (без скачивания)
-        info_opts = {**ydl_opts, 'skip_download': True}
-        
-        with yt_dlp.YoutubeDL(info_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            
-            if not info:
-                logger.error("Не удалось получить информацию")
-                return None
-            
-            # Проверяем, какой формат БУДЕТ выбран
-            selected_format = info.get('format_id', '?')
-            selected_ext = info.get('ext', '?')
-            logger.info(f"🎯 Выбран формат: {selected_format} ({selected_ext})")
-            
-            # Проверяем размер
-            if info.get('filesize'):
-                size_mb = info['filesize'] / (1024 * 1024)
-                logger.info(f"💾 Ожидаемый размер: {size_mb:.1f} MB")
-            elif info.get('filesize_approx'):
-                size_mb = info['filesize_approx'] / (1024 * 1024)
-                logger.info(f"💾 Примерный размер: {size_mb:.1f} MB")
-        
-        if cancel_event.is_set():
-            logger.info("🛑 Отменено")
-            return None
-        
-        # ТЕПЕРЬ КАЧАЕМ
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             
@@ -189,7 +243,7 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
             logger.info(f"⏱ Общее время: {total_time:.1f}с")
             logger.info(f"🎬 {info.get('title', 'N/A')[:80]}")
             logger.info(f"👤 {info.get('uploader', 'N/A')}")
-            logger.info(f"📊 Формат: {info.get('format_id', '?')}")
+            logger.info(f"📊 ФОРМАТ: {info.get('format_id', '?')} (НЕ 18!)")
             
             file_path = ydl.prepare_filename(info)
             
@@ -217,6 +271,10 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
             logger.info(f"💾 {file_size_mb:.1f} MB")
             logger.info(f"⚡ Скорость: {download_speed:.2f} MB/s")
             
+            # ВАЖНО: проверяем, что это НЕ формат 18
+            if info.get('format_id') == '18':
+                logger.warning("⚠️ ВНИМАНИЕ: всё ещё формат 18!")
+            
             duration = info.get('duration', 0)
             if duration:
                 duration = int(duration)
@@ -241,6 +299,7 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
                 'tags': info.get('tags', []),
                 'upload_date': info.get('upload_date', ''),
                 'age_limit': info.get('age_limit', 0),
+                'format_id': info.get('format_id', '?'),
             }
             
     except Exception as e:
@@ -251,6 +310,10 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
         raise
 
 
+# ============================================================
+# ОБРАБОТЧИКИ
+# ============================================================
+
 @client.on(events.NewMessage(pattern='/start'))
 async def start_handler(event):
     user_id = event.sender_id
@@ -260,29 +323,20 @@ async def start_handler(event):
     except:
         user_name = f"User {user_id}"
     
-    logger.info(f"📱 /start от {user_name}")
-    
     await event.reply(
         f"🎬 **Привет, {user_name}!**\n\n"
-        "Я - Media Download Bot! 🤖\n\n"
-        "⚡ **Быстрая загрузка видео!**\n"
-        "• 📺 YouTube: 720p/480p/360p mp4\n"
+        "⚡ **YouTube Download Bot**\n\n"
+        "• 📺 YouTube: 720p/480p/360p (HE 18!)\n"
         "• 🎵 TikTok: лучшее качество\n"
-        "• ⚡ Нативный загрузчик (макс. скорость)\n\n"
-        "Просто отправь мне ссылку!\n\n"
-        "⚠️ Макс. размер: 2GB | Отмена: /cancel"
+        "• 🚀 Автовыбор быстрого формата\n\n"
+        "Отправь ссылку!\n"
+        "/cancel - отмена"
     )
 
 
 @client.on(events.NewMessage(pattern='/help'))
 async def help_handler(event):
-    await event.reply(
-        "📖 **Справка**\n\n"
-        "1️⃣ Отправьте ссылку\n"
-        "2️⃣ Бот скачает видео\n"
-        "3️⃣ Видео отправится вам\n\n"
-        "Команды: /start /help /cancel"
-    )
+    await event.reply("📖 Отправь ссылку - получи видео!\n/cancel - отмена")
 
 
 @client.on(events.NewMessage(pattern='/cancel'))
@@ -290,8 +344,7 @@ async def cancel_handler(event):
     user_id = event.sender_id
     if user_id in user_downloads:
         user_downloads[user_id].set()
-        await event.reply("🛑 **Отмена загрузки...**")
-        logger.info(f"🛑 Пользователь {user_id} отменил загрузку")
+        await event.reply("🛑 Отмена...")
     else:
         await event.reply("ℹ️ Нет активных загрузок")
 
@@ -311,25 +364,19 @@ async def message_handler(event):
         return
     
     if user_id in user_downloads and not user_downloads[user_id].is_set():
-        await event.reply("⚠️ **Уже есть активная загрузка!**\nДождитесь или /cancel")
+        await event.reply("⚠️ Уже есть активная загрузка!")
         return
     
     platform_emoji = "📺" if platform == "youtube" else "🎵"
     platform_name = "YouTube" if platform == "youtube" else "TikTok"
     
-    console_logger.separator(f"НОВЫЙ ЗАПРОС от {user_id}")
-    logger.info(f"{platform_emoji} Платформа: {platform_name}")
-    logger.info(f"🔗 URL: {clean_url}")
+    console_logger.separator(f"ЗАПРОС от {user_id}")
+    logger.info(f"{platform_emoji} {platform_name}: {clean_url}")
     
     cancel_event = threading.Event()
     user_downloads[user_id] = cancel_event
     
-    status_msg = await event.reply(
-        f"{platform_emoji} **Загружаю видео...**\n"
-        f"🌐 {platform_name}\n"
-        f"⚡ Нативный загрузчик\n"
-        f"🚫 /cancel для отмены"
-    )
+    status_msg = await event.reply(f"{platform_emoji} **Загружаю...**\n⚡ Выбираю быстрый формат...")
     
     start_time = datetime.now()
     
@@ -340,26 +387,23 @@ async def message_handler(event):
             None, download_video_sync, clean_url, platform, cancel_event
         )
         
-        try:
-            video_info = await asyncio.wait_for(download_task, timeout=DOWNLOAD_TIMEOUT)
-        except asyncio.TimeoutError:
-            await status_msg.edit("⏰ **Таймаут загрузки**")
-            return
+        video_info = await asyncio.wait_for(download_task, timeout=DOWNLOAD_TIMEOUT)
         
         if cancel_event.is_set() or video_info is None:
-            await status_msg.edit("🛑 **Загрузка отменена**")
+            await status_msg.edit("🛑 Отменено")
             return
         
         file_path = video_info['file_path']
         file_size_mb = video_info['file_size_mb']
         
         if file_size_mb > MAX_FILE_SIZE_MB:
-            await status_msg.edit(f"❌ **Файл слишком большой:** {file_size_mb:.1f} MB")
+            await status_msg.edit(f"❌ Слишком большой: {file_size_mb:.1f} MB")
             if os.path.exists(file_path):
                 os.remove(file_path)
             return
         
-        await status_msg.edit(f"✅ **Скачано!** ({file_size_mb:.1f} MB)\n📤 Отправляю...")
+        format_id = video_info.get('format_id', '?')
+        await status_msg.edit(f"✅ **Скачано!** ({file_size_mb:.1f} MB)\n📊 Формат: {format_id}\n📤 Отправляю...")
         
         duration = video_info.get('duration', 0)
         if duration > 0:
@@ -368,28 +412,18 @@ async def message_handler(event):
         else:
             duration_str = "Неизвестно"
         
-        if platform == 'youtube':
-            caption = (
-                f"📺 **{video_info.get('fulltitle', video_info['title'])}**\n\n"
-                f"👤 **Канал:** {video_info.get('channel') or video_info.get('uploader', 'N/A')}\n"
-                f"⏱ **Длительность:** {duration_str}\n"
-            )
-        else:
-            caption = (
-                f"🎵 **{video_info.get('fulltitle', video_info['title'])}**\n\n"
-                f"👤 **Автор:** @{video_info.get('uploader', 'N/A')}\n"
-                f"⏱ **Длительность:** {duration_str}\n"
-            )
+        caption = (
+            f"📺 **{video_info.get('fulltitle', video_info['title'])}**\n\n"
+            f"👤 **Канал:** {video_info.get('channel') or video_info.get('uploader', 'N/A')}\n"
+            f"⏱ **Длительность:** {duration_str}\n"
+            f"💾 **Размер:** {file_size_mb:.1f} MB\n"
+            f"📊 **Формат:** {format_id}\n"
+        )
         
         if video_info.get('view_count'):
             caption += f"👁 **Просмотров:** {video_info['view_count']:,}\n"
-        if video_info.get('like_count'):
-            caption += f"❤️ **Лайков:** {video_info['like_count']:,}\n"
         
-        caption += (
-            f"💾 **Размер:** {file_size_mb:.1f} MB\n"
-            f"🔗 {video_info['url']}"
-        )
+        caption += f"🔗 {video_info['url']}"
         
         if len(caption) > 1000:
             caption = caption[:997] + '...'
@@ -405,7 +439,7 @@ async def message_handler(event):
         
         await status_msg.delete()
         
-        logger.info(f"✅ УСПЕШНО: {video_info['title'][:50]}... | {file_size_mb:.1f}MB | {total_time:.1f}s")
+        logger.info(f"✅ {video_info['title'][:50]}... | {file_size_mb:.1f}MB | {total_time:.1f}s | Формат: {format_id}")
         
         try:
             if os.path.exists(file_path):
@@ -413,35 +447,34 @@ async def message_handler(event):
         except Exception as e:
             logger.warning(f"Не удалось удалить файл: {e}")
         
+    except asyncio.TimeoutError:
+        await status_msg.edit("⏰ Таймаут")
     except Exception as e:
         if not cancel_event.is_set():
             logger.error(f"Ошибка: {str(e)[:200]}")
-            await status_msg.edit(f"❌ **Ошибка:** {str(e)[:200]}")
-    
+            await status_msg.edit(f"❌ Ошибка: {str(e)[:200]}")
     finally:
         if user_id in user_downloads:
             del user_downloads[user_id]
 
 
 async def main():
-    console_logger.separator("ЗАПУСК БОТА", char="=")
-    
-    logger.info(f"📺 YouTube: 22 (720p mp4) / 18 (360p) / 134+140")
-    logger.info(f"🎵 TikTok: лучшее качество")
-    logger.info(f"⚡ НАТИВНЫЙ загрузчик (без aria2c)")
-    logger.info(f"📦 Буфер: 10MB | Чанки: 50MB")
+    console_logger.separator("ЗАПУСК", char="=")
+    logger.info("📺 YouTube: 22/136+140/135+140/134+140 (НЕ 18!)")
+    logger.info("🎵 TikTok: лучшее качество")
+    logger.info("⚡ Нативный загрузчик | 100MB чанки")
+    logger.info("🎯 Автовыбор быстрого формата")
     
     await client.start(bot_token=BOT_TOKEN)
     me = await client.get_me()
     
-    logger.info(f"✅ Бот запущен: @{me.username}")
+    logger.info(f"✅ Бот: @{me.username}")
     
     print()
     print("=" * 60)
-    print(f"  🤖 БОТ: @{me.username}")
-    print(f"  📺 YouTube: 720p/360p mp4")
-    print(f"  ⚡ Нативный загрузчик")
-    print(f"  🚫 /cancel для отмены")
+    print(f"  🤖 @{me.username}")
+    print(f"  📺 YouTube: 720p/480p/360p (НЕ 18!)")
+    print(f"  🎯 Автовыбор формата")
     print("=" * 60)
     print()
     
@@ -453,7 +486,7 @@ if __name__ == '__main__':
         import yt_dlp
         import telethon
     except ImportError as e:
-        print(f"❌ Установите: pip install yt-dlp telethon")
+        print(f"❌ pip install yt-dlp telethon")
         exit(1)
     
     client.loop.run_until_complete(main())
