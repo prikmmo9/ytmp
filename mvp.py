@@ -24,7 +24,7 @@ MAX_FILE_SIZE_MB = 2000
 DOWNLOAD_TIMEOUT = 600
 
 # Путь к файлу cookies
-COOKIES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
+COOKIES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookie.txt')
 
 # Создаем консольный логгер
 console_logger = create_logger(
