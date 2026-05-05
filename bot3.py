@@ -917,3 +917,6 @@ async def main():
     print()
     
     await client.run_until_disconnected()
+# Проверьте, что в конце файла есть:
+if __name__ == '__main__':
+    client.loop.run_until_complete(main())
