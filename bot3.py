@@ -560,7 +560,6 @@ async def database_handler(event):
     
     db_size_mb = os.path.getsize(DB_PATH) / (1024 * 1024)
     
-    # Получаем статистику для подписи
     stats = get_stats()
     
     caption = (
@@ -639,7 +638,7 @@ async def callback_handler(event):
         # ============================================================
         # НАЙДЕНО В КЭШЕ - ОТПРАВЛЯЕМ МГНОВЕННО
         # ============================================================
-        logger.info(f"⚡ НАЙДЕНО В КЭШЕ! Отправляю мгновенно (file_id: {cached['telegram_file_id'][:30]}...)")
+        logger.info(f"⚡ НАЙДЕНО В КЭШЕ! Отправляю мгновенно")
         
         await event.edit(
             f"🎯 **Найдено в кэше!**\n"
@@ -697,11 +696,10 @@ async def callback_handler(event):
                 allow_cache=True,
             )
         
-        # Обновляем счётчик
         update_downloads_count(video_id, quality)
         await event.delete()
         
-        logger.info(f"⚡ Мгновенно из кэша: {cached['title'][:50]}... | {cached['quality_label']} | пересылка №{cached['downloads_count']+1}")
+        logger.info(f"⚡ Мгновенно из кэша: {cached['title'][:50]}... | {cached['quality_label']}")
         return
     
     # ============================================================
@@ -797,27 +795,42 @@ async def callback_handler(event):
             )
         
         # ============================================================
-        # СОХРАНЯЕМ В БД ПОСЛЕ ОТПРАВКИ
+        # СОХРАНЯЕМ В БД ПОСЛЕ ОТПРАВКИ (ИСПРАВЛЕНО!)
         # ============================================================
-        if sent_message.media and hasattr(sent_message.media, 'document'):
-            file_id = sent_message.media.document.id
-            file_unique_id = sent_message.media.document.file_unique_id
-            
-            logger.info(f"💾 Сохраняю в БД: video_id={video_id}, quality={quality}")
-            
-            save_complete_info(
-                video_id=video_id,
-                platform=platform,
-                quality=quality,
-                info=video_info.get('full_info', video_info),
-                telegram_file_id=file_id,
-                telegram_file_unique_id=file_unique_id,
-                file_size_mb=file_size_mb,
-            )
-            
-            logger.info(f"✅ Сохранено в БД: {video_info['title'][:50]}... [{quality}] | file_id={file_id[:30]}...")
-        else:
-            logger.error(f"❌ Не удалось получить file_id из отправленного сообщения!")
+        try:
+            if sent_message and hasattr(sent_message, 'media') and sent_message.media:
+                media = sent_message.media
+                
+                if hasattr(media, 'document') and media.document:
+                    file_id = media.document.id
+                    
+                    # Пробуем получить file_unique_id (может не существовать в старых версиях)
+                    file_unique_id = None
+                    try:
+                        if hasattr(media.document, 'file_unique_id'):
+                            file_unique_id = media.document.file_unique_id
+                    except:
+                        pass
+                    
+                    logger.info(f"💾 Сохраняю в БД: video_id={video_id}, quality={quality}, file_id={file_id}")
+                    
+                    save_complete_info(
+                        video_id=video_id,
+                        platform=platform,
+                        quality=quality,
+                        info=video_info.get('full_info', video_info),
+                        telegram_file_id=file_id,
+                        telegram_file_unique_id=file_unique_id,
+                        file_size_mb=file_size_mb,
+                    )
+                    
+                    logger.info(f"✅ Сохранено в БД: {video_info['title'][:50]}... [{quality}]")
+                else:
+                    logger.error(f"❌ media не содержит document")
+            else:
+                logger.error(f"❌ Не удалось получить media из сообщения")
+        except Exception as e:
+            logger.error(f"❌ Ошибка сохранения в БД: {str(e)[:200]}")
         
         total_time = (datetime.now() - start_time).total_seconds()
         await event.delete()
@@ -858,7 +871,7 @@ async def message_handler(event):
     if text.startswith('/'):
         return
     
-    # Проверяем, не запрос ли это файла БД (по кодовому слову)
+    # Кодовое слово для отправки БД
     if text == '123455':
         await database_handler(event)
         return
