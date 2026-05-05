@@ -24,6 +24,9 @@ logger = create_logger(
 DOWNLOAD_FOLDER = 'downloads'
 COOKIES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
 
+# Минимальная длительность видео (в секундах)
+MIN_DURATION_SECONDS = 78  # 1.3 минуты
+
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 
 # ============================================================
@@ -407,24 +410,7 @@ def download_video(url: str, platform: str, quality: str,
             if duration:
                 duration = int(duration)
             
-            # Размеры видео
-            if not is_audio:
-                width = info.get('width') or quality_config['resolution'][0] or 640
-                height = info.get('height') or quality_config['resolution'][1] or 360
-            else:
-                width, height = 0, 0
-            
-            # Превью
-            thumb_path = None
-            if not is_audio:
-                if platform == 'youtube':
-                    thumb_path = download_thumbnail_youtube(info.get('id', ''))
-                elif platform == 'tiktok':
-                    thumb_path = download_thumbnail_tiktok(info.get('thumbnail', ''), info.get('id', ''))
-            
-            logger.info(f"✅ Скачано: {os.path.basename(file_path)} | {file_size_mb:.1f} MB | {total_time:.1f}с")
-            
-            # Полная информация для БД
+            # Формируем full_info до проверки длительности
             full_info = {
                 'title': info.get('title', 'Видео'),
                 'fulltitle': info.get('fulltitle', info.get('title', 'Видео')),
@@ -443,10 +429,63 @@ def download_video(url: str, platform: str, quality: str,
                 'tags': info.get('tags', []),
                 'categories': info.get('categories', []),
                 'url': url,
-                'width': int(width),
-                'height': int(height),
+                'width': 0,
+                'height': 0,
                 'format_id': info.get('format_id', '?'),
             }
+            
+            # Проверка минимальной длительности (ТОЛЬКО для видео, не для аудио)
+            if not is_audio and duration < MIN_DURATION_SECONDS:
+                logger.info(f"⏱ Видео слишком короткое ({duration}с < {MIN_DURATION_SECONDS}с). Пропускаем.")
+                # Удаляем скачанный файл
+                try:
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                except:
+                    pass
+                
+                return {
+                    'title': full_info['title'],
+                    'fulltitle': full_info['fulltitle'],
+                    'uploader': full_info['uploader'],
+                    'channel': full_info['channel'],
+                    'duration': duration,
+                    'file_path': None,
+                    'file_size_mb': 0,
+                    'url': url,
+                    'platform': platform,
+                    'quality': quality_config['description'],
+                    'quality_code': quality,
+                    'is_audio': is_audio,
+                    'width': 0,
+                    'height': 0,
+                    'thumb_path': None,
+                    'view_count': full_info['view_count'],
+                    'like_count': full_info['like_count'],
+                    'full_info': full_info,
+                    'too_short': True,
+                }
+            
+            # Размеры видео
+            if not is_audio:
+                width = info.get('width') or quality_config['resolution'][0] or 640
+                height = info.get('height') or quality_config['resolution'][1] or 360
+            else:
+                width, height = 0, 0
+            
+            # Обновляем full_info с реальными размерами
+            full_info['width'] = int(width)
+            full_info['height'] = int(height)
+            
+            # Превью
+            thumb_path = None
+            if not is_audio:
+                if platform == 'youtube':
+                    thumb_path = download_thumbnail_youtube(info.get('id', ''))
+                elif platform == 'tiktok':
+                    thumb_path = download_thumbnail_tiktok(info.get('thumbnail', ''), info.get('id', ''))
+            
+            logger.info(f"✅ Скачано: {os.path.basename(file_path)} | {file_size_mb:.1f} MB | {total_time:.1f}с")
             
             return {
                 'title': full_info['title'],
@@ -467,6 +506,7 @@ def download_video(url: str, platform: str, quality: str,
                 'view_count': full_info['view_count'],
                 'like_count': full_info['like_count'],
                 'full_info': full_info,
+                'too_short': False,
             }
     
     except Exception as e:
@@ -488,3 +528,4 @@ if __name__ == '__main__':
     print(f"Platform: {platform}")
     print(f"Video ID: {video_id}")
     print(f"aria2: {ARIA2_AVAILABLE}")
+    print(f"Min duration: {MIN_DURATION_SECONDS}с")
