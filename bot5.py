@@ -57,48 +57,28 @@ storage_chat_id = None
 
 def format_caption(video_info: dict, platform: str, from_cache: bool = False) -> str:
     """Форматирует подпись к видео"""
-    duration = video_info.get('duration', 0)
-    if duration > 0:
-        minutes, secs = divmod(int(duration), 60)
-        duration_str = f"{minutes}:{secs:02d}"
-    else:
-        duration_str = "Неизвестно"
+    # Название видео
+    title = video_info.get('fulltitle', video_info.get('title', 'Без названия'))
     
-    is_audio = video_info.get('is_audio', False)
+    # Канал
+    channel = video_info.get('channel') or video_info.get('uploader', 'Неизвестный')
+    
+    # Дата загрузки
+    upload_date = video_info.get('upload_date', '')
+    if upload_date and len(upload_date) == 8:
+        upload_date = f"{upload_date[6:8]}.{upload_date[4:6]}.{upload_date[0:4]}"
+    elif not upload_date:
+        upload_date = "Неизвестно"
+    
+    # Качество
     quality_str = video_info.get('quality', '')
-    file_size_mb = video_info.get('file_size_mb', 0)
     
-    if is_audio:
-        caption = (
-            f"🎵 **{video_info.get('fulltitle', video_info['title'])}**\n\n"
-            f"👤 **{'Канал' if platform == 'youtube' else 'Автор'}:** {video_info.get('channel') or video_info.get('uploader', 'N/A')}\n"
-            f"⏱ **Длительность:** {duration_str}\n"
-            f"💾 **Размер:** {file_size_mb:.1f} MB\n"
-            f"📊 **Формат:** MP3 (192 kbps)\n"
-        )
-    else:
-        if platform == 'youtube':
-            caption = (
-                f"📺 **{video_info.get('fulltitle', video_info['title'])}**\n\n"
-                f"👤 **Канал:** {video_info.get('channel') or video_info.get('uploader', 'N/A')}\n"
-                f"⏱ **Длительность:** {duration_str}\n"
-            )
-        else:
-            caption = (
-                f"🎵 **{video_info.get('fulltitle', video_info['title'])}**\n\n"
-                f"👤 **Автор:** @{video_info.get('uploader', 'N/A')}\n"
-                f"⏱ **Длительность:** {duration_str}\n"
-            )
-        
-        if video_info.get('view_count'):
-            caption += f"👁 **Просмотров:** {video_info['view_count']:,}\n"
-        if video_info.get('like_count'):
-            caption += f"❤️ **Лайков:** {video_info['like_count']:,}\n"
-        
-        caption += (
-            f"💾 **Размер:** {file_size_mb:.1f} MB\n"
-            f"📊 **Качество:** {quality_str}\n"
-        )
+    caption = (
+        f"📺 **{title}**\n\n"
+        f"👤 **Канал:** {channel}\n"
+        f"📅 **Дата загрузки:** {upload_date}\n"
+        f"📊 **Качество:** {quality_str}\n"
+    )
     
     if from_cache:
         caption += "⚡ **Переслано из хранилища**\n"
@@ -221,16 +201,11 @@ async def process_download(event, user_id, url, platform, video_id, quality):
                 'fulltitle': cached['title'],
                 'uploader': cached.get('channel_name', 'Неизвестный'),
                 'channel': cached.get('channel_name', 'Неизвестный'),
-                'duration': cached['duration'],
-                'view_count': cached['view_count'],
-                'like_count': cached['like_count'],
-                'file_size_mb': cached['file_size_mb'],
                 'quality': cached['quality_label'],
                 'url': cached['video_url'],
-                'is_audio': (quality == 'mp3'),
+                'upload_date': '',
             }, platform, from_cache=True)
             
-            # Пересылаем из хранилища и добавляем подпись
             forwarded = await client.forward_messages(
                 entity=event.chat_id,
                 messages=cached['storage_message_id'],
@@ -679,9 +654,8 @@ async def mysubs_handler(event):
     text = f"📋 **Ваши подписки ({len(subs)}):**\n\n"
     for sub in subs:
         name = sub.get('channel_name_full') or sub.get('channel_name', 'Неизвестный')
-        quality = sub.get('quality', '720')
         text += f"• **{name}**\n"
-        text += f"  Качество: {quality}p | ID: `{sub['channel_id']}`\n"
+        text += f"  ID: `{sub['channel_id']}`\n"
         text += f"  Отписаться: `/unsubscribe {sub['channel_id']}`\n\n"
     
     await event.reply(text)
