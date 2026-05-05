@@ -87,7 +87,6 @@ def detect_platform(url: str) -> Tuple[Optional[str], Optional[str]]:
 def download_video_sync(url: str, platform: str, cancel_event: threading.Event) -> Optional[dict]:
     """
     Синхронная функция скачивания видео.
-    ГЛАВНОЕ ИЗМЕНЕНИЕ: ОДИН вызов yt-dlp для всего (информация + скачивание).
     """
     if cancel_event.is_set():
         logger.info("🛑 Загрузка отменена до начала")
@@ -127,8 +126,24 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
                     '--max-tries=5',
                     '--retry-wait=1',
                 ],
-                # ФИКСИРОВАННЫЙ ФОРМАТ: только mp4 360p с AVC
-                'format': '134+140/18',  # 134=360p AVC mp4, 140=audio m4a, 18=запасной
+                'format': '134+140/18',
+                # === ОПТИМИЗАЦИЯ ИЗВЛЕЧЕНИЯ ===
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': 'android',
+                        'player_skip': ['web', 'web_safari'],
+                    }
+                },
+                'remote_components': ['ejs:github'],
+                'youtube_include_hls_manifest': False,
+                'youtube_include_dash_manifest': False,
+                # === УСКОРЕНИЕ FFMPEG ===
+                'postprocessor_args': [
+                    '-c', 'copy',
+                    '-movflags', '+faststart'
+                ],
+                'prefer_ffmpeg': True,
+                # ============================
                 'http_headers': {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                 }
@@ -147,8 +162,24 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
                 'concurrent_fragment_downloads': 16,
                 'buffersize': 2 * 1024 * 1024,
                 'http_chunk_size': 20 * 1024 * 1024,
-                # ФИКСИРОВАННЫЙ ФОРМАТ
                 'format': '134+140/18',
+                # === ОПТИМИЗАЦИЯ ИЗВЛЕЧЕНИЯ ===
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': 'android',
+                        'player_skip': ['web', 'web_safari'],
+                    }
+                },
+                'remote_components': ['ejs:github'],
+                'youtube_include_hls_manifest': False,
+                'youtube_include_dash_manifest': False,
+                # === УСКОРЕНИЕ FFMPEG ===
+                'postprocessor_args': [
+                    '-c', 'copy',
+                    '-movflags', '+faststart'
+                ],
+                'prefer_ffmpeg': True,
+                # ============================
                 'http_headers': {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                 }
@@ -198,10 +229,6 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
         return None
     
     try:
-        # ============================================================
-        # ОДИН ВЫЗОВ: получаем информацию и сразу качаем
-        # ============================================================
-        
         def progress_hook(d):
             if d['status'] == 'downloading':
                 try:
@@ -224,7 +251,6 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
         ydl_opts['progress_hooks'] = [progress_hook]
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Извлекаем информацию И скачиваем за один раз
             info = ydl.extract_info(url, download=True)
             
             if not info:
@@ -233,14 +259,12 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
             
             total_time = time.time() - start_time
             
-            # Логируем основную информацию
             logger.info(f"⏱ Общее время: {total_time:.1f}с")
             logger.info(f"🎬 Название: {info.get('title', 'N/A')[:80]}")
             logger.info(f"👤 Автор: {info.get('uploader', 'N/A')}")
             logger.info(f"⏱ Длительность: {info.get('duration', 0)}с")
             logger.info(f"📊 Формат: {info.get('format_id', '?')}")
             
-            # Находим файл
             file_path = ydl.prepare_filename(info)
             
             if not os.path.exists(file_path):
@@ -501,7 +525,8 @@ async def main():
     logger.info(f"📺 YouTube: ФОРМАТ 134+140 (360p AVC mp4 + AAC m4a)")
     logger.info(f"🎵 TikTok: лучшее качество")
     logger.info(f"⚡ ОДИН вызов yt-dlp (информация + скачивание)")
-    logger.info(f"🚫 Формат 18 НЕ используется")
+    logger.info(f"🚀 Оптимизация: EJS компоненты, без HLS/DASH манифестов, Android клиент")
+    logger.info(f"🎬 FFmpeg: copy-режим + faststart для стриминга")
     
     if ARIA2_AVAILABLE:
         logger.info("🚀 aria2c: 16 потоков")
@@ -517,7 +542,7 @@ async def main():
     print("=" * 60)
     print(f"  🤖 БОТ: @{me.username}")
     print(f"  📺 YouTube: 360p AVC (134+140)")
-    print(f"  ⚡ Мгновенная загрузка")
+    print(f"  ⚡ Оптимизированная загрузка")
     print(f"  🚫 /cancel для отмены")
     print("=" * 60)
     print()
