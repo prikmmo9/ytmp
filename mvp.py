@@ -10,13 +10,14 @@ from typing import Optional, Tuple
 
 import yt_dlp
 from telethon import TelegramClient, events
+import telethon  # Нужно для DocumentAttributeVideo
 from logger_config import create_logger
 
 # ============================================================
 # КОНФИГУРАЦИЯ
 # ============================================================
 API_ID = int(os.getenv('API_ID', '22268845'))
-API_HASH = os.getenv('API_HASH', 'ffbeffdfb86784e12b39aea5f53857d2')
+API_HASH = os.getenv('API_HASH', 'ffbeffdfb86784e12b39aea5f53857d2'))
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8566350925:AAEOwpPgXhmR3SE_7TapSbzMJnqImnMA-Js')
 
 DOWNLOAD_FOLDER = 'downloads'
@@ -24,7 +25,7 @@ MAX_FILE_SIZE_MB = 2000
 DOWNLOAD_TIMEOUT = 600
 
 # Путь к файлу cookies
-COOKIES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookie.txt')
+COOKIES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
 
 # Создаем консольный логгер
 console_logger = create_logger(
@@ -108,12 +109,9 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
     # ============================================================
     
     if platform == 'youtube':
-        # Проверяем наличие cookies
         cookies_exists = os.path.exists(COOKIES_FILE)
         if cookies_exists:
             logger.info("🍪 Используются cookies из cookies.txt")
-        else:
-            logger.warning("⚠️ cookies.txt не найден, работа без авторизации")
         
         if ARIA2_AVAILABLE:
             logger.info("🚀 aria2c: 16 потоков")
@@ -155,11 +153,9 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
                     '-movflags', '+faststart'
                 ],
                 'prefer_ffmpeg': True,
-                # ============================
                 'http_headers': {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                     'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                 }
             }
         else:
@@ -195,11 +191,9 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
                     '-movflags', '+faststart'
                 ],
                 'prefer_ffmpeg': True,
-                # ============================
                 'http_headers': {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                     'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                 }
             }
     elif platform == 'tiktok':
@@ -313,6 +307,14 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
             if duration:
                 duration = int(duration)
             
+            # Определяем разрешение видео
+            width = 640
+            height = 360
+            if platform == 'tiktok':
+                # TikTok обычно вертикальное
+                width = 576
+                height = 1024
+            
             return {
                 'title': info.get('title', 'Видео'),
                 'fulltitle': info.get('fulltitle', info.get('title', 'Видео')),
@@ -333,6 +335,8 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
                 'tags': info.get('tags', []),
                 'upload_date': info.get('upload_date', ''),
                 'age_limit': info.get('age_limit', 0),
+                'width': width,
+                'height': height,
             }
             
     except Exception as e:
@@ -507,12 +511,30 @@ async def message_handler(event):
         if len(caption) > 1000:
             caption = caption[:997] + '...'
         
+        # ============================================================
+        # ОТПРАВКА КАК ВИДЕО (с поддержкой стриминга и полного экрана)
+        # ============================================================
+        
         await client.send_file(
             entity=chat_id,
             file=file_path,
             caption=caption,
-            supports_streaming=True
+            force_document=False,  # Отправлять как видео, НЕ как файл
+            attributes=[
+                telethon.types.DocumentAttributeVideo(
+                    duration=duration if duration > 0 else 0,
+                    w=video_info.get('width', 640),
+                    h=video_info.get('height', 360),
+                    supports_streaming=True,  # ВОТ ЭТО включает запоминание позиции
+                    round_message=False
+                )
+            ],
+            supports_streaming=True,
+            part_size_kb=512,
+            allow_cache=True,
         )
+        
+        # ============================================================
         
         total_time = (datetime.now() - start_time).total_seconds()
         
@@ -549,6 +571,7 @@ async def main():
     logger.info(f"🍪 Cookies: {'загружены' if os.path.exists(COOKIES_FILE) else 'НЕТ (медленнее)'}")
     logger.info(f"🚀 Оптимизация: EJS компоненты, без HLS/DASH манифестов, Android клиент")
     logger.info(f"🎬 FFmpeg: copy-режим + faststart для стриминга")
+    logger.info(f"📤 Отправка: видео с поддержкой стриминга и полного экрана")
     
     if ARIA2_AVAILABLE:
         logger.info("🚀 aria2c: 16 потоков")
@@ -565,7 +588,8 @@ async def main():
     print(f"  🤖 БОТ: @{me.username}")
     print(f"  📺 YouTube: 360p AVC (134+140)")
     print(f"  ⚡ Оптимизированная загрузка")
-    print(f"  🍪 Cookies: {'✅ Загружены' if os.path.exists(COOKIES_FILE) else '❌ Отсутствуют'}")
+    print(f"  🍪 Cookies: {'✅ Да' if os.path.exists(COOKIES_FILE) else '❌ Нет'}")
+    print(f"  📤 Видео: стриминг + полный экран")
     print(f"  🚫 /cancel для отмены")
     print("=" * 60)
     print()
