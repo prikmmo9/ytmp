@@ -8,13 +8,12 @@ from asyncio import Semaphore
 
 import telethon
 from telethon import TelegramClient, events, Button
-import requests
-import xml.etree.ElementTree as ET
-import sqlite3
 
 from logger_config import create_logger
 from database import *
 from downloader import *
+from channel_monitor import *
+from progress_bar import VideoProgressBar
 
 # ============================================================
 # КОНФИГУРАЦИЯ
@@ -26,7 +25,9 @@ BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8566350925:AAEOwpPgXhmR3SE_7TapSbzM
 STORAGE_CHAT = -1001776425232  # @copirkaDva
 MAX_FILE_SIZE_MB = 2000
 DOWNLOAD_TIMEOUT = 600
-MAX_CONCURRENT_DOWNLOADS = 3  # Максимум одновременных загрузок
+MAX_CONCURRENT_DOWNLOADS = 3
+
+# Настройки мониторинга
 MONITOR_INTERVAL_MINUTES = 30
 ENABLE_MONITORING = True
 
@@ -112,157 +113,32 @@ def format_caption(video_info: dict, platform: str, from_cache: bool = False) ->
 
 
 # ============================================================
-# МОНИТОРИНГ КАНАЛОВ
+# УВЕДОМЛЕНИЯ ПОДПИСЧИКАМ
 # ============================================================
 
-def get_monitored_channels() -> list:
-    """Получает список YouTube-каналов из БД"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+async def notify_subscribers(channel_id: str, video_title: str, video_url: str):
+    """Отправляет уведомления подписчикам канала о новом видео"""
+    subscribers = get_channel_subscribers(channel_id)
     
-    cursor.execute('''
-        SELECT DISTINCT channel_id, name, platform, channel_url
-        FROM channels
-        WHERE platform = 'youtube' AND channel_id IS NOT NULL AND channel_id != ''
-        ORDER BY name
-    ''')
+    if not subscribers:
+        return
     
-    rows = cursor.fetchall()
-    conn.close()
+    channel = get_channel(channel_id)
+    channel_name = channel['name'] if channel else 'Неизвестный канал'
     
-    return [
-        {'channel_id': row[0], 'name': row[1], 'platform': row[2], 'channel_url': row[3]}
-        for row in rows
-    ]
-
-
-def check_channel_rss(channel_id: str) -> list:
-    """Проверяет RSS-ленту канала на новые видео"""
-    rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
-    
-    try:
-        response = requests.get(rss_url, timeout=15, headers={
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        })
-        
-        if response.status_code != 200:
-            return []
-        
-        root = ET.fromstring(response.content)
-        
-        ns = {
-            'atom': 'http://www.w3.org/2005/Atom',
-            'yt': 'http://www.youtube.com/xml/schemas/2015',
-        }
-        
-        videos = []
-        
-        for entry in root.findall('atom:entry', ns):
-            video_id_elem = entry.find('yt:videoId', ns)
-            title_elem = entry.find('atom:title', ns)
-            published_elem = entry.find('atom:published', ns)
-            
-            if video_id_elem is not None:
-                video_id = video_id_elem.text
-                title = title_elem.text if title_elem is not None else 'Без названия'
-                published = published_elem.text if published_elem is not None else ''
-                url = f"https://www.youtube.com/watch?v={video_id}"
-                
-                if not is_video_in_db(video_id):
-                    videos.append({
-                        'video_id': video_id,
-                        'title': title,
-                        'url': url,
-                        'published': published,
-                        'channel_id': channel_id,
-                    })
-        
-        return videos
-    
-    except Exception as e:
-        logger.error(f"❌ RSS ошибка для {channel_id}: {str(e)[:100]}")
-        return []
-
-
-def is_video_in_db(video_id: str) -> bool:
-    """Проверяет, есть ли видео в БД"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('SELECT 1 FROM videos WHERE video_id = ?', (video_id,))
-    exists = cursor.fetchone() is not None
-    conn.close()
-    return exists
-
-
-def add_new_video_to_db(video_info: dict):
-    """Добавляет новое видео в БД"""
-    add_or_update_video(
-        video_id=video_info['video_id'],
-        platform='youtube',
-        title=video_info['title'],
-        url=video_info['url'],
-        channel_id=video_info['channel_id'],
-        upload_date=video_info.get('published', ''),
+    message = (
+        f"🔔 **Новое видео на канале!**\n\n"
+        f"📺 **{video_title[:100]}**\n"
+        f"👤 **Канал:** {channel_name}\n"
+        f"🔗 {video_url}"
     )
-
-
-async def check_all_channels(send_notifications: bool = True) -> list:
-    """Проверяет все каналы на новые видео"""
-    channels = get_monitored_channels()
     
-    if not channels:
-        return []
-    
-    logger.info(f"🔍 Проверяю {len(channels)} каналов...")
-    
-    all_new_videos = []
-    
-    for channel in channels[:20]:
-        channel_id = channel['channel_id']
-        channel_name = channel['name']
-        
-        new_videos = check_channel_rss(channel_id)
-        
-        if new_videos:
-            logger.info(f"📺 {channel_name}: +{len(new_videos)} новых видео")
-            
-            for video in new_videos:
-                add_new_video_to_db(video)
-                
-                if send_notifications and storage_chat_id:
-                    try:
-                        message = (
-                            f"🆕 **Новое видео!**\n\n"
-                            f"📺 **{video['title'][:100]}**\n"
-                            f"👤 **Канал:** {channel_name}\n"
-                            f"🔗 {video['url']}\n"
-                            f"📅 {video.get('published', '')[:10]}"
-                        )
-                        await client.send_message(storage_chat_id, message)
-                    except:
-                        pass
-            
-            all_new_videos.extend(new_videos)
-    
-    if all_new_videos:
-        logger.info(f"✅ Найдено {len(all_new_videos)} новых видео")
-    
-    return all_new_videos
-
-
-async def monitor_loop():
-    """Бесконечный цикл мониторинга"""
-    logger.info(f"🔄 Мониторинг каналов запущен (интервал: {MONITOR_INTERVAL_MINUTES} мин)")
-    
-    await asyncio.sleep(60)
-    
-    while True:
+    for sub in subscribers:
         try:
-            await check_all_channels(send_notifications=True)
+            await client.send_message(sub['user_id'], message)
+            logger.info(f"📤 Уведомление отправлено пользователю {sub['user_id']}")
         except Exception as e:
-            logger.error(f"❌ Ошибка мониторинга: {str(e)[:200]}")
-        
-        await asyncio.sleep(MONITOR_INTERVAL_MINUTES * 60)
+            logger.error(f"❌ Ошибка отправки уведомления {sub['user_id']}: {e}")
 
 
 # ============================================================
@@ -270,26 +146,31 @@ async def monitor_loop():
 # ============================================================
 
 async def process_download(event, user_id, url, platform, video_id, quality):
-    """Обрабатывает загрузку с семафором"""
+    """Обрабатывает загрузку с прогресс-баром"""
     
     quality_config = QUALITY_OPTIONS.get(quality, QUALITY_OPTIONS['360'])
     
     logger.info(f"🌐 {platform.upper()} | 📊 {quality_config['description']} | ID: {video_id}")
-    logger.info(f"🔗 {url}")
+    
+    # Создаём прогресс-бар
+    progress = VideoProgressBar(
+        message=event._message if hasattr(event, '_message') else None,
+        platform=platform,
+        quality=quality_config['description'],
+    )
+    
+    # Этап 1: Проверка кэша и получение информации
+    progress.update_stage1(10, "Проверяю кэш...")
+    await progress.update_message()
+    await asyncio.sleep(0.3)
     
     # Проверяем кэш
     cached = get_cached_file(video_id, quality)
     
     if cached and cached.get('storage_message_id') and cached.get('storage_chat_id'):
         try:
-            logger.info(f"⚡ Пересылаю из хранилища: msg_id={cached['storage_message_id']}")
-            
-            await event.edit(
-                f"🎯 **Найдено в кэше!**\n"
-                f"📤 Пересылаю из хранилища...\n"
-                f"📊 {cached['quality_label']} | 💾 {cached['file_size_mb']:.1f} MB",
-                buttons=None
-            )
+            progress.update_stage1(80, "Найдено в кэше! Пересылаю...")
+            await progress.update_message()
             
             await client.forward_messages(
                 entity=event.chat_id,
@@ -313,19 +194,18 @@ async def process_download(event, user_id, url, platform, video_id, quality):
             
             await client.send_message(event.chat_id, caption)
             update_downloads_count(video_id, quality)
+            
+            progress.complete(file_size_mb=cached['file_size_mb'])
+            await progress.update_message()
+            await asyncio.sleep(1)
             await event.delete()
             return
         except Exception as e:
             logger.warning(f"⚠️ Ошибка пересылки: {e}")
     
     # Качаем заново
-    await event.edit(
-        f"🔄 **Загружаю...**\n"
-        f"🌐 {platform.upper()}\n"
-        f"📊 {quality_config['label']}\n"
-        f"⏳ Получаю информацию и скачиваю...",
-        buttons=None
-    )
+    progress.update_stage1(30, "Начинаю загрузку...")
+    await progress.update_message()
     
     cancel_event = threading.Event()
     user_downloads[user_id] = cancel_event
@@ -333,27 +213,42 @@ async def process_download(event, user_id, url, platform, video_id, quality):
     try:
         loop = asyncio.get_event_loop()
         
-        def progress_callback(percent, speed, eta):
-            console_logger.download_progress(percent, speed=speed, eta=eta)
+        def download_progress_callback(percent, speed, eta):
+            progress.update_download(percent, speed, eta)
+            asyncio.create_task(progress.update_message())
+        
+        # Завершаем этап 1
+        progress.update_stage1(100, "Информация получена")
+        await progress.update_message()
+        
+        # Этап 2: Скачивание
+        progress.stage = 2
+        progress.stage_progress = 0
+        await progress.update_message()
         
         download_task = loop.run_in_executor(
-            None, download_video, url, platform, quality, progress_callback, cancel_event
+            None, download_video, url, platform, quality, download_progress_callback, cancel_event
         )
         
         try:
             video_info = await asyncio.wait_for(download_task, timeout=DOWNLOAD_TIMEOUT)
         except asyncio.TimeoutError:
+            progress.cancel()
+            await progress.update_message()
             await event.edit("⏰ **Таймаут загрузки**\nПопробуйте другое качество")
             return
         
         if cancel_event.is_set() or video_info is None:
-            await event.edit("🛑 **Загрузка отменена**")
+            progress.cancel()
+            await progress.update_message()
             return
         
         # Проверка на слишком короткое видео
         if video_info.get('too_short'):
             duration = video_info.get('duration', 0)
             minutes, secs = divmod(duration, 60)
+            progress.cancel()
+            await progress.update_message()
             await event.edit(
                 f"⏱ **Видео слишком короткое!**\n\n"
                 f"📺 {video_info.get('fulltitle', video_info['title'])[:100]}\n"
@@ -376,6 +271,8 @@ async def process_download(event, user_id, url, platform, video_id, quality):
         duration = video_info.get('duration', 0)
         
         if file_size_mb > MAX_FILE_SIZE_MB:
+            progress.cancel()
+            await progress.update_message()
             await event.edit(f"❌ **Слишком большой файл:** {file_size_mb:.1f} MB")
             try:
                 if os.path.exists(file_path): os.remove(file_path)
@@ -383,12 +280,21 @@ async def process_download(event, user_id, url, platform, video_id, quality):
             except: pass
             return
         
-        await event.edit(f"✅ **Скачано!** ({file_size_mb:.1f} MB)\n📤 **Отправляю...**")
+        # Этап 3: Отправка
+        progress.stage = 3
+        progress.stage_progress = 0
+        progress.update_upload(0, f"Подготовка к отправке...")
+        await progress.update_message()
+        
+        progress.set_title(video_info['title'])
         
         # Сохраняем в хранилище
         storage_message = None
         if storage_chat_id:
             try:
+                progress.update_upload(20, "Сохраняю в хранилище...")
+                await progress.update_message()
+                
                 storage_caption = f"[{quality_config['quality_label']}] {video_info['fulltitle'][:200]}\n{video_info['url']}"
                 
                 if is_audio:
@@ -416,6 +322,9 @@ async def process_download(event, user_id, url, platform, video_id, quality):
                 logger.error(f"❌ Ошибка сохранения в хранилище: {e}")
         
         # Отправляем пользователю
+        progress.update_upload(50, "Отправляю вам...")
+        await progress.update_message()
+        
         caption = format_caption(video_info, platform)
         
         if storage_message:
@@ -439,6 +348,9 @@ async def process_download(event, user_id, url, platform, video_id, quality):
                     )],
                     supports_streaming=True)
         
+        progress.update_upload(90, "Почти готово...")
+        await progress.update_message()
+        
         # Сохраняем в БД
         if storage_message:
             save_complete_info_with_storage(
@@ -449,6 +361,9 @@ async def process_download(event, user_id, url, platform, video_id, quality):
                 file_size_mb=file_size_mb,
             )
         
+        progress.complete(file_size_mb=file_size_mb)
+        await progress.update_message()
+        await asyncio.sleep(1.5)
         await event.delete()
         
         # Чистим
@@ -456,6 +371,15 @@ async def process_download(event, user_id, url, platform, video_id, quality):
             if os.path.exists(file_path): os.remove(file_path)
             if thumb_path and os.path.exists(thumb_path): os.remove(thumb_path)
         except: pass
+        
+        # Уведомляем подписчиков
+        try:
+            full_info = video_info.get('full_info', {})
+            channel_id_db = full_info.get('channel_id', '')
+            if channel_id_db:
+                await notify_subscribers(channel_id_db, video_info['title'], url)
+        except:
+            pass
     
     except Exception as e:
         if not cancel_event.is_set():
@@ -476,15 +400,10 @@ async def start_handler(event):
     try:
         sender = await event.get_sender()
         user_name = sender.first_name or user_id
-    except:
-        user_name = user_id
-    
-    # Регистрируем пользователя
-    try:
-        add_or_update_user(user_id, username=getattr(sender, 'username', None), 
+        add_or_update_user(user_id, username=getattr(sender, 'username', None),
                           first_name=getattr(sender, 'first_name', None))
     except:
-        pass
+        user_name = user_id
     
     stats = get_stats()
     channels_count = len(get_monitored_channels())
@@ -504,8 +423,8 @@ async def start_handler(event):
         f"• 🍪 Cookies: {'✅' if os.path.exists(COOKIES_FILE) else '❌'}\n"
         f"• 🗄 Хранилище: {'✅' if storage_chat_id else '❌'}\n"
         f"• ⚡ Кэш: {stats['total_videos']} видео\n"
-        f"• 🔍 Мониторинг: {channels_count} каналов\n\n"
-        "⚠️ Макс. 2GB | /stats | /monitor | /channels | /database | /cancel"
+        f"• 👥 Пользователей: {stats['total_users']}\n\n"
+        "⚠️ Макс. 2GB | /stats | /monitor | /channels | /subscribe | /mysubs | /database | /cancel"
     )
     
     await event.reply(welcome)
@@ -535,7 +454,7 @@ async def stats_handler(event):
 @client.on(events.NewMessage(pattern='/monitor'))
 async def monitor_handler(event):
     await event.reply("🔍 **Проверяю каналы на новые видео...**")
-    new_videos = await check_all_channels(send_notifications=False)
+    new_videos = await check_all_channels(client, send_notifications=True)
     if new_videos:
         text = f"✅ **Найдено {len(new_videos)} новых видео:**\n\n"
         for v in new_videos[:15]:
@@ -549,13 +468,117 @@ async def monitor_handler(event):
 async def channels_handler(event):
     channels = get_monitored_channels()
     if not channels:
-        await event.reply("📭 **Нет каналов в базе данных**")
+        await event.reply("📭 **Нет каналов в базе данных**\n\nКаналы добавляются при скачивании видео.")
         return
     text = f"📺 **Отслеживаемые каналы ({len(channels)}):**\n\n"
     for ch in channels[:30]:
         text += f"• {ch['name']}\n"
     if len(channels) > 30:
         text += f"\n... и ещё {len(channels) - 30}"
+    text += f"\n🔍 Проверка каждые {MONITOR_INTERVAL_MINUTES} мин."
+    await event.reply(text)
+
+
+@client.on(events.NewMessage(pattern='/subscribe'))
+async def subscribe_handler(event):
+    """Подписка на канал: /subscribe <channel_id или ссылка>"""
+    user_id = event.sender_id
+    args = event.text.split()
+    
+    if len(args) < 2:
+        await event.reply(
+            "📋 **Подписка на канал**\n\n"
+            "Использование:\n"
+            "`/subscribe UC_channel_id`\n"
+            "`/subscribe https://youtube.com/@channel`\n\n"
+            "После подписки вы будете получать уведомления о новых видео."
+        )
+        return
+    
+    channel_input = args[1]
+    
+    # Пробуем получить channel_id
+    channel_id = None
+    channel_name = "Неизвестный канал"
+    
+    # Если это ссылка YouTube
+    if 'youtube.com/' in channel_input or 'youtu.be/' in channel_input:
+        try:
+            from downloader import get_video_info
+            info = get_video_info(channel_input, 'youtube')
+            if info:
+                channel_id = info.get('channel_id', '')
+                channel_name = info.get('channel', '') or info.get('uploader', 'Неизвестный')
+        except:
+            pass
+    
+    # Если это ID канала (начинается с UC)
+    if not channel_id and channel_input.startswith('UC'):
+        channel_id = channel_input
+    
+    if not channel_id:
+        await event.reply("❌ **Не удалось определить ID канала**\nОтправьте ссылку на видео с этого канала сначала.")
+        return
+    
+    # Подписываем
+    subscribe_to_channel(user_id, channel_id, channel_name)
+    
+    # Добавляем в таблицу каналов если нет
+    existing = get_channel(channel_id)
+    if not existing:
+        add_or_update_channel(channel_id, channel_name, 'youtube', 
+                            channel_url=f"https://youtube.com/channel/{channel_id}")
+    
+    await event.reply(
+        f"✅ **Подписка оформлена!**\n\n"
+        f"👤 Канал: **{channel_name}**\n"
+        f"🔔 Вы будете получать уведомления о новых видео.\n\n"
+        f"Отписаться: `/unsubscribe {channel_id}`\n"
+        f"Мои подписки: /mysubs"
+    )
+    
+    logger.info(f"🔔 Пользователь {user_id} подписался на {channel_name}")
+
+
+@client.on(events.NewMessage(pattern='/unsubscribe'))
+async def unsubscribe_handler(event):
+    """Отписка от канала: /unsubscribe <channel_id>"""
+    user_id = event.sender_id
+    args = event.text.split()
+    
+    if len(args) < 2:
+        await event.reply("📋 Использование: `/unsubscribe <channel_id>`\nСписок подписок: /mysubs")
+        return
+    
+    channel_id = args[1]
+    
+    if unsubscribe_from_channel(user_id, channel_id):
+        await event.reply("✅ **Вы отписались от канала**")
+    else:
+        await event.reply("❌ **Подписка не найдена**")
+
+
+@client.on(events.NewMessage(pattern='/mysubs'))
+async def mysubs_handler(event):
+    """Показывает подписки пользователя"""
+    user_id = event.sender_id
+    subs = get_user_subscriptions(user_id)
+    
+    if not subs:
+        await event.reply(
+            "📭 **У вас нет подписок**\n\n"
+            "Подписаться: `/subscribe <channel_id>`"
+        )
+        return
+    
+    text = f"📋 **Ваши подписки ({len(subs)}):**\n\n"
+    for sub in subs:
+        name = sub.get('channel_name_full') or sub.get('channel_name', 'Неизвестный')
+        quality = sub.get('quality', '720')
+        text += f"• **{name}**\n"
+        text += f"  Качество: {quality}p | ID: `{sub['channel_id']}`\n"
+        text += f"  Отписаться: `/unsubscribe {sub['channel_id']}`\n\n"
+    
     await event.reply(text)
 
 
@@ -636,7 +659,6 @@ async def message_handler(event):
     if text.startswith('/'):
         return
     
-    # Кодовое слово для БД
     if text == '123455':
         await database_handler(event)
         return
@@ -734,7 +756,7 @@ async def main():
         logger.error(f"❌ Хранилище недоступно: {e}")
     
     if ENABLE_MONITORING and channels:
-        asyncio.create_task(monitor_loop())
+        asyncio.create_task(monitor_loop(client, MONITOR_INTERVAL_MINUTES, notify_subscribers))
         logger.info(f"🔍 Мониторинг запущен: {len(channels)} каналов, интервал {MONITOR_INTERVAL_MINUTES} мин")
     
     logger.info(f"✅ Бот запущен: @{me.username}")
@@ -748,6 +770,7 @@ async def main():
     print(f"  🗄 Хранилище: {'✅' if storage_chat_id else '❌'}")
     print(f"  💾 БД: {stats['total_videos']} видео | 👥 {stats['total_users']} пользователей")
     print(f"  🔍 Мониторинг: {len(channels)} каналов")
+    print(f"  /start | /stats | /monitor | /channels | /subscribe | /mysubs | /database")
     print("=" * 60)
     print()
     
