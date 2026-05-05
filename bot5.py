@@ -204,7 +204,7 @@ async def process_download(event, user_id, url, platform, video_id, quality):
             logger.error(f"Ошибка обновления прогресса: {e}")
     
     # ============================================================
-    # ЭТАП 1: ПРОВЕРКА КЭША (быстро)
+    # ЭТАП 1: ПРОВЕРКА КЭША
     # ============================================================
     await update_progress(1, "Проверка кэша", 2, "Ищу в базе данных...")
     await asyncio.sleep(0.5)
@@ -215,12 +215,6 @@ async def process_download(event, user_id, url, platform, video_id, quality):
         try:
             await update_progress(1, "Найдено в кэше!", 15, "Пересылаю из хранилища...")
             await asyncio.sleep(0.5)
-            
-            await client.forward_messages(
-                entity=event.chat_id,
-                messages=cached['storage_message_id'],
-                from_peer=cached['storage_chat_id'],
-            )
             
             caption = format_caption({
                 'title': cached['title'],
@@ -236,7 +230,19 @@ async def process_download(event, user_id, url, platform, video_id, quality):
                 'is_audio': (quality == 'mp3'),
             }, platform, from_cache=True)
             
-            await client.send_message(event.chat_id, caption)
+            # Пересылаем из хранилища и добавляем подпись
+            forwarded = await client.forward_messages(
+                entity=event.chat_id,
+                messages=cached['storage_message_id'],
+                from_peer=cached['storage_chat_id'],
+            )
+            
+            if forwarded:
+                try:
+                    await client.edit_message(event.chat_id, forwarded[0].id, text=caption)
+                except:
+                    await client.send_message(event.chat_id, caption)
+            
             update_downloads_count(video_id, quality)
             
             await update_progress(1, "Готово! Мгновенная отправка", 100, 
@@ -251,7 +257,7 @@ async def process_download(event, user_id, url, platform, video_id, quality):
     # ЭТАП 1: ПОЛУЧЕНИЕ ИНФОРМАЦИИ (2% → 30% за ~80 секунд)
     # ============================================================
     stage1_total_steps = 16
-    stage1_delay = 5.0  # 16 * 5 = 80 секунд
+    stage1_delay = 5.0
     
     stage1_messages = [
         (3, "Подключаюсь к YouTube API..."),
@@ -337,7 +343,6 @@ async def process_download(event, user_id, url, platform, video_id, quality):
             await event.edit("🛑 **Загрузка отменена**")
             return
         
-        # Проверка на слишком короткое видео
         if video_info.get('too_short'):
             duration = video_info.get('duration', 0)
             minutes, secs = divmod(duration, 60)
@@ -414,21 +419,33 @@ async def process_download(event, user_id, url, platform, video_id, quality):
         
         await update_progress(3, "Отправка в Telegram", 80, "Отправляю вам...", title=video_title)
         
+        # Формируем подпись
         caption = format_caption(video_info, platform)
         
+        # Отправляем ОДНИМ сообщением (видео + подпись)
         if storage_message:
-            await client.forward_messages(event.chat_id, storage_message.id, from_peer=storage_chat_id)
-            await client.send_message(event.chat_id, caption)
+            forwarded = await client.forward_messages(
+                event.chat_id, 
+                storage_message.id, 
+                from_peer=storage_chat_id,
+            )
+            if forwarded:
+                try:
+                    await client.edit_message(event.chat_id, forwarded[0].id, text=caption)
+                except:
+                    await client.send_message(event.chat_id, caption)
         else:
             if is_audio:
-                await client.send_file(event.chat_id, file_path, caption=caption,
+                await client.send_file(
+                    event.chat_id, file_path, caption=caption,
                     attributes=[telethon.types.DocumentAttributeAudio(
                         duration=duration if duration > 0 else 0,
                         title=video_title,
                         performer=video_info.get('uploader', 'Unknown'),
                     )])
             else:
-                await client.send_file(event.chat_id, file_path, caption=caption,
+                await client.send_file(
+                    event.chat_id, file_path, caption=caption,
                     force_document=False,
                     thumb=thumb_path if thumb_path and os.path.exists(thumb_path) else None,
                     attributes=[telethon.types.DocumentAttributeVideo(
