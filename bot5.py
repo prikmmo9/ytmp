@@ -756,7 +756,11 @@ async def main():
         logger.error(f"❌ Хранилище недоступно: {e}")
     
     if ENABLE_MONITORING and channels:
-        asyncio.create_task(monitor_loop(client, MONITOR_INTERVAL_MINUTES, notify_subscribers))
+        asyncio.create_task(monitor_loop(
+            bot_client=client,
+            interval_minutes=MONITOR_INTERVAL_MINUTES,
+            notify_callback=notify_subscribers
+        ))
         logger.info(f"🔍 Мониторинг запущен: {len(channels)} каналов, интервал {MONITOR_INTERVAL_MINUTES} мин")
     
     logger.info(f"✅ Бот запущен: @{me.username}")
