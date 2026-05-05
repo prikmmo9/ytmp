@@ -14,7 +14,42 @@ def init_database():
     cursor = conn.cursor()
     
     # ============================================================
-    # Таблица 1: Каналы (авторы)
+    # Таблица 1: Пользователи
+    # ============================================================
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER UNIQUE NOT NULL,
+            username TEXT,
+            first_name TEXT,
+            last_name TEXT,
+            is_admin INTEGER DEFAULT 0,
+            notifications_enabled INTEGER DEFAULT 1,
+            joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # ============================================================
+    # Таблица 2: Подписки на каналы
+    # ============================================================
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            channel_id TEXT NOT NULL,
+            channel_name TEXT,
+            quality TEXT DEFAULT '720',
+            auto_download INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, channel_id),
+            FOREIGN KEY (user_id) REFERENCES users(user_id),
+            FOREIGN KEY (channel_id) REFERENCES channels(channel_id)
+        )
+    ''')
+    
+    # ============================================================
+    # Таблица 3: Каналы (авторы)
     # ============================================================
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS channels (
@@ -33,7 +68,7 @@ def init_database():
     ''')
     
     # ============================================================
-    # Таблица 2: Видео
+    # Таблица 4: Видео
     # ============================================================
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS videos (
@@ -63,7 +98,7 @@ def init_database():
     ''')
     
     # ============================================================
-    # Таблица 3: Качества и Telegram file_id
+    # Таблица 5: Качества и Telegram file_id
     # ============================================================
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS video_files (
@@ -88,12 +123,11 @@ def init_database():
         )
     ''')
     
-    # Добавляем столбцы, если их нет (для старых БД)
+    # Добавляем столбцы для старых БД
     try:
         cursor.execute('ALTER TABLE video_files ADD COLUMN storage_chat_id INTEGER')
     except:
         pass
-    
     try:
         cursor.execute('ALTER TABLE video_files ADD COLUMN storage_message_id INTEGER')
     except:
@@ -102,33 +136,231 @@ def init_database():
     # ============================================================
     # Индексы
     # ============================================================
-    cursor.execute('''
-        CREATE INDEX IF NOT EXISTS idx_video_files_lookup 
-        ON video_files(video_id, quality)
-    ''')
-    
-    cursor.execute('''
-        CREATE INDEX IF NOT EXISTS idx_videos_channel 
-        ON videos(channel_id)
-    ''')
-    
-    cursor.execute('''
-        CREATE INDEX IF NOT EXISTS idx_videos_platform 
-        ON videos(platform)
-    ''')
-    
-    cursor.execute('''
-        CREATE INDEX IF NOT EXISTS idx_channels_platform 
-        ON channels(platform)
-    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_subscriptions_channel ON subscriptions(channel_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_video_files_lookup ON video_files(video_id, quality)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_videos_channel ON videos(channel_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_videos_platform ON videos(platform)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_channels_platform ON channels(platform)')
     
     conn.commit()
     conn.close()
-    print("✅ База данных создана/обновлена")
+    print("✅ База данных создана/обновлена (users + subscriptions)")
 
 
 # ============================================================
-# Операции с каналами
+# ОПЕРАЦИИ С ПОЛЬЗОВАТЕЛЯМИ
+# ============================================================
+
+def add_or_update_user(user_id: int, username: str = None, 
+                       first_name: str = None, last_name: str = None) -> int:
+    """Добавляет или обновляет пользователя"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        INSERT OR REPLACE INTO users (user_id, username, first_name, last_name, last_active)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ''', (user_id, username, first_name, last_name))
+    
+    conn.commit()
+    user_pk = cursor.lastrowid
+    conn.close()
+    
+    return user_pk
+
+
+def get_user(user_id: int) -> Optional[Dict]:
+    """Получает информацию о пользователе"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row:
+        columns = ['id', 'user_id', 'username', 'first_name', 'last_name',
+                   'is_admin', 'notifications_enabled', 'joined_at', 'last_active']
+        return dict(zip(columns, row))
+    
+    return None
+
+
+def update_user_activity(user_id: int):
+    """Обновляет время последней активности"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('UPDATE users SET last_active = CURRENT_TIMESTAMP WHERE user_id = ?', (user_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_all_users() -> List[Dict]:
+    """Получает всех пользователей"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM users ORDER BY last_active DESC')
+    rows = cursor.fetchall()
+    conn.close()
+    
+    columns = ['id', 'user_id', 'username', 'first_name', 'last_name',
+               'is_admin', 'notifications_enabled', 'joined_at', 'last_active']
+    
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def toggle_notifications(user_id: int) -> bool:
+    """Включает/выключает уведомления для пользователя"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        UPDATE users 
+        SET notifications_enabled = CASE WHEN notifications_enabled = 1 THEN 0 ELSE 1 END
+        WHERE user_id = ?
+    ''', (user_id,))
+    
+    conn.commit()
+    
+    cursor.execute('SELECT notifications_enabled FROM users WHERE user_id = ?', (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+    
+    return bool(result[0]) if result else True
+
+
+# ============================================================
+# ОПЕРАЦИИ С ПОДПИСКАМИ
+# ============================================================
+
+def subscribe_to_channel(user_id: int, channel_id: str, channel_name: str = None,
+                         quality: str = '720', auto_download: int = 0) -> int:
+    """Подписывает пользователя на канал"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        INSERT OR REPLACE INTO subscriptions (user_id, channel_id, channel_name, quality, auto_download)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (user_id, channel_id, channel_name, quality, auto_download))
+    
+    conn.commit()
+    sub_pk = cursor.lastrowid
+    conn.close()
+    
+    return sub_pk
+
+
+def unsubscribe_from_channel(user_id: int, channel_id: str) -> bool:
+    """Отписывает пользователя от канала"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('DELETE FROM subscriptions WHERE user_id = ? AND channel_id = ?', 
+                   (user_id, channel_id))
+    
+    conn.commit()
+    deleted = cursor.rowcount > 0
+    conn.close()
+    
+    return deleted
+
+
+def get_user_subscriptions(user_id: int) -> List[Dict]:
+    """Получает подписки пользователя"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT s.*, c.name as channel_name_full, c.channel_url, c.subscriber_count
+        FROM subscriptions s
+        LEFT JOIN channels c ON s.channel_id = c.channel_id
+        WHERE s.user_id = ?
+        ORDER BY s.created_at DESC
+    ''', (user_id,))
+    
+    rows = cursor.fetchall()
+    conn.close()
+    
+    columns = ['id', 'user_id', 'channel_id', 'channel_name', 'quality', 
+               'auto_download', 'created_at', 'channel_name_full', 'channel_url', 'subscriber_count']
+    
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def get_channel_subscribers(channel_id: str) -> List[Dict]:
+    """Получает подписчиков канала (для уведомлений)"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT s.*, u.username, u.first_name, u.notifications_enabled
+        FROM subscriptions s
+        JOIN users u ON s.user_id = u.user_id
+        WHERE s.channel_id = ? AND u.notifications_enabled = 1
+    ''', (channel_id,))
+    
+    rows = cursor.fetchall()
+    conn.close()
+    
+    columns = ['id', 'user_id', 'channel_id', 'channel_name', 'quality',
+               'auto_download', 'created_at', 'username', 'first_name', 'notifications_enabled']
+    
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def is_subscribed(user_id: int, channel_id: str) -> bool:
+    """Проверяет, подписан ли пользователь на канал"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT 1 FROM subscriptions WHERE user_id = ? AND channel_id = ?',
+                   (user_id, channel_id))
+    
+    result = cursor.fetchone() is not None
+    conn.close()
+    
+    return result
+
+
+def update_subscription_quality(user_id: int, channel_id: str, quality: str):
+    """Обновляет качество для подписки"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        UPDATE subscriptions SET quality = ? WHERE user_id = ? AND channel_id = ?
+    ''', (quality, user_id, channel_id))
+    
+    conn.commit()
+    conn.close()
+
+
+def toggle_auto_download(user_id: int, channel_id: str) -> bool:
+    """Включает/выключает автоскачивание для подписки"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        UPDATE subscriptions 
+        SET auto_download = CASE WHEN auto_download = 1 THEN 0 ELSE 1 END
+        WHERE user_id = ? AND channel_id = ?
+    ''', (user_id, channel_id))
+    
+    conn.commit()
+    
+    cursor.execute('SELECT auto_download FROM subscriptions WHERE user_id = ? AND channel_id = ?',
+                   (user_id, channel_id))
+    result = cursor.fetchone()
+    conn.close()
+    
+    return bool(result[0]) if result else False
+
+
+# ============================================================
+# ОПЕРАЦИИ С КАНАЛАМИ
 # ============================================================
 
 def add_or_update_channel(channel_id: str, name: str, platform: str, 
@@ -172,8 +404,24 @@ def get_channel(channel_id: str) -> Optional[Dict]:
     return None
 
 
+def get_all_channels() -> List[Dict]:
+    """Получает все каналы"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM channels ORDER BY name')
+    rows = cursor.fetchall()
+    conn.close()
+    
+    columns = ['id', 'channel_id', 'name', 'platform', 'channel_url',
+               'subscriber_count', 'avatar_url', 'description', 'verified',
+               'created_at', 'updated_at']
+    
+    return [dict(zip(columns, row)) for row in rows]
+
+
 # ============================================================
-# Операции с видео
+# ОПЕРАЦИИ С ВИДЕО
 # ============================================================
 
 def add_or_update_video(video_id: str, platform: str, title: str, url: str,
@@ -233,38 +481,8 @@ def get_video(video_id: str) -> Optional[Dict]:
     return None
 
 
-def update_video_stats(video_id: str, view_count: int = None, 
-                       like_count: int = None, comment_count: int = None):
-    """Обновляет статистику видео"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    updates = []
-    values = []
-    
-    if view_count is not None:
-        updates.append("view_count = ?")
-        values.append(view_count)
-    if like_count is not None:
-        updates.append("like_count = ?")
-        values.append(like_count)
-    if comment_count is not None:
-        updates.append("comment_count = ?")
-        values.append(comment_count)
-    
-    if updates:
-        updates.append("updated_at = CURRENT_TIMESTAMP")
-        values.append(video_id)
-        cursor.execute(f'''
-            UPDATE videos SET {', '.join(updates)} WHERE video_id = ?
-        ''', values)
-    
-    conn.commit()
-    conn.close()
-
-
 # ============================================================
-# Операции с файлами (качествами)
+# ОПЕРАЦИИ С ФАЙЛАМИ
 # ============================================================
 
 def save_video_file(video_id: str, quality: str, telegram_file_id: str,
@@ -273,7 +491,7 @@ def save_video_file(video_id: str, quality: str, telegram_file_id: str,
                     telegram_file_unique_id: str = None,
                     storage_chat_id: int = None,
                     storage_message_id: int = None) -> int:
-    """Сохраняет информацию о скачанном и отправленном видеофайле"""
+    """Сохраняет информацию о скачанном видеофайле"""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
@@ -303,10 +521,7 @@ def save_video_file(video_id: str, quality: str, telegram_file_id: str,
 
 
 def get_cached_file(video_id: str, quality: str) -> Optional[Dict]:
-    """
-    Ищет видеофайл в кэше по video_id и качеству.
-    Возвращает информацию с storage_chat_id и storage_message_id.
-    """
+    """Ищет видеофайл в кэше"""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
@@ -355,8 +570,8 @@ def update_downloads_count(video_id: str, quality: str):
     conn.close()
 
 
-def get_available_qualities(video_id: str) -> List[str]:
-    """Возвращает список качеств, доступных в кэше для видео"""
+def get_available_qualities(video_id: str) -> List[Dict]:
+    """Возвращает список качеств, доступных в кэше"""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
@@ -382,16 +597,14 @@ def get_available_qualities(video_id: str) -> List[str]:
 
 
 # ============================================================
-# Полное сохранение с хранилищем
+# ПОЛНОЕ СОХРАНЕНИЕ
 # ============================================================
 
 def save_complete_info_with_storage(video_id: str, platform: str, quality: str,
                                      info: Dict, storage_chat_id: int,
                                      storage_message_id: int, file_size_mb: float = 0):
-    """
-    Сохраняет полную информацию: канал + видео + файл с привязкой к хранилищу.
-    """
-    # 1. Сохраняем канал
+    """Сохраняет полную информацию с привязкой к хранилищу"""
+    # Канал
     channel_id = info.get('channel_id', '') or info.get('uploader_id', '')
     channel_name = info.get('channel', '') or info.get('uploader', 'Неизвестный')
     channel_url = info.get('channel_url', '') or info.get('uploader_url', '')
@@ -404,7 +617,7 @@ def save_complete_info_with_storage(video_id: str, platform: str, quality: str,
             channel_url=channel_url,
         )
     
-    # 2. Сохраняем видео
+    # Видео
     tags_str = ','.join(info.get('tags', [])) if info.get('tags') else None
     categories_str = ','.join(info.get('categories', [])) if info.get('categories') else None
     
@@ -428,7 +641,7 @@ def save_complete_info_with_storage(video_id: str, platform: str, quality: str,
         is_short=1 if info.get('duration', 0) <= 60 else 0,
     )
     
-    # 3. Сохраняем файл с привязкой к хранилищу
+    # Файл
     quality_config = {
         '360': '360p', '480': '480p', '720': '720p HD',
         '1080': '1080p Full HD', 'mp3': 'MP3',
@@ -448,14 +661,36 @@ def save_complete_info_with_storage(video_id: str, platform: str, quality: str,
     )
 
 
+def save_complete_info(video_id: str, platform: str, quality: str,
+                       info: Dict, telegram_file_id: str,
+                       telegram_file_unique_id: str = None,
+                       file_path: str = None, file_size_mb: float = 0):
+    """Сохраняет полную информацию (без хранилища)"""
+    save_complete_info_with_storage(
+        video_id=video_id,
+        platform=platform,
+        quality=quality,
+        info=info,
+        storage_chat_id=None,
+        storage_message_id=int(telegram_file_id) if telegram_file_id.isdigit() else 0,
+        file_size_mb=file_size_mb,
+    )
+
+
 # ============================================================
-# Статистика
+# СТАТИСТИКА
 # ============================================================
 
 def get_stats() -> Dict:
     """Возвращает полную статистику БД"""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    
+    cursor.execute('SELECT COUNT(*) FROM users')
+    total_users = cursor.fetchone()[0]
+    
+    cursor.execute('SELECT COUNT(*) FROM subscriptions')
+    total_subscriptions = cursor.fetchone()[0]
     
     cursor.execute('SELECT COUNT(*) FROM channels')
     total_channels = cursor.fetchone()[0]
@@ -482,39 +717,27 @@ def get_stats() -> Dict:
     top_downloads = cursor.fetchall()
     
     cursor.execute('''
-        SELECT title, view_count, like_count, url
-        FROM videos
-        ORDER BY view_count DESC
+        SELECT c.name, COUNT(s.id) as sub_count
+        FROM subscriptions s
+        JOIN channels c ON s.channel_id = c.channel_id
+        GROUP BY s.channel_id
+        ORDER BY sub_count DESC
         LIMIT 10
     ''')
-    top_views = cursor.fetchall()
-    
-    cursor.execute('''
-        SELECT platform, COUNT(*) 
-        FROM videos 
-        GROUP BY platform
-    ''')
-    platform_stats = cursor.fetchall()
-    
-    cursor.execute('''
-        SELECT quality_label, COUNT(*), SUM(file_size_mb)
-        FROM video_files
-        GROUP BY quality
-    ''')
-    quality_stats = cursor.fetchall()
+    top_channels = cursor.fetchall()
     
     conn.close()
     
     return {
+        'total_users': total_users,
+        'total_subscriptions': total_subscriptions,
         'total_channels': total_channels,
         'total_videos': total_videos,
         'total_files': total_files,
         'total_downloads': total_downloads,
         'total_size_mb': round(total_size, 1) if total_size else 0,
         'top_downloads': top_downloads,
-        'top_views': top_views,
-        'platform_stats': platform_stats,
-        'quality_stats': quality_stats,
+        'top_channels': top_channels,
     }
 
 
@@ -549,12 +772,16 @@ if __name__ == '__main__':
     print("=" * 60)
     print("  Обновление базы данных")
     print("=" * 60)
-    print()
     
     init_database()
     
     print()
-    print("✅ Таблицы обновлены (добавлены поля storage_chat_id, storage_message_id)")
+    print("✅ Таблицы созданы/обновлены:")
+    print("  1. users         - пользователи")
+    print("  2. subscriptions - подписки на каналы")
+    print("  3. channels      - каналы")
+    print("  4. videos        - видео")
+    print("  5. video_files   - файлы (качества)")
     print()
     
     conn = sqlite3.connect(DB_PATH)
@@ -565,13 +792,11 @@ if __name__ == '__main__':
     
     for table in tables:
         table_name = table[0]
-        print(f"📋 Таблица: {table_name}")
+        print(f"📋 {table_name}")
         cursor.execute(f"PRAGMA table_info({table_name})")
-        columns = cursor.fetchall()
-        for col in columns:
+        for col in cursor.fetchall():
             print(f"   - {col[1]} ({col[2]})")
         print()
     
     conn.close()
-    
     print("✅ Готово!")
