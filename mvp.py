@@ -10,7 +10,7 @@ from typing import Optional, Tuple
 
 import yt_dlp
 from telethon import TelegramClient, events
-import telethon  # Нужно для DocumentAttributeVideo
+import telethon
 from logger_config import create_logger
 
 # ============================================================
@@ -58,6 +58,33 @@ def check_aria2():
 ARIA2_AVAILABLE = check_aria2()
 
 
+def download_thumbnail(url: str, video_id: str) -> Optional[str]:
+    """Скачивает превью видео"""
+    import requests
+    
+    thumb_path = os.path.join(DOWNLOAD_FOLDER, f"thumb_{video_id}.jpg")
+    
+    # Пробуем разные URL для превью
+    thumb_urls = [
+        f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg",
+        f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
+        f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg",
+        f"https://i.ytimg.com/vi/{video_id}/sddefault.jpg",
+    ]
+    
+    for thumb_url in thumb_urls:
+        try:
+            response = requests.get(thumb_url, timeout=10)
+            if response.status_code == 200 and len(response.content) > 1000:
+                with open(thumb_path, 'wb') as f:
+                    f.write(response.content)
+                return thumb_path
+        except:
+            continue
+    
+    return None
+
+
 def detect_platform(url: str) -> Tuple[Optional[str], Optional[str]]:
     youtube_patterns = [
         r'(?:https?://)?(?:www\.)?youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})',
@@ -68,10 +95,11 @@ def detect_platform(url: str) -> Tuple[Optional[str], Optional[str]]:
     for pattern in youtube_patterns:
         match = re.match(pattern, url)
         if match:
-            return 'youtube', f"https://www.youtube.com/watch?v={match.group(1)}"
+            return 'youtube', f"https://www.youtube.com/watch?v={match.group(1)}", match.group(1)
     
     if re.match(r'^[a-zA-Z0-9_-]{11}$', url.strip()):
-        return 'youtube', f"https://www.youtube.com/watch?v={url.strip()}"
+        video_id = url.strip()
+        return 'youtube', f"https://www.youtube.com/watch?v={video_id}", video_id
     
     tiktok_patterns = [
         r'(?:https?://)?(?:www\.)?tiktok\.com/@[\w.-]+/video/(\d+)',
@@ -83,9 +111,9 @@ def detect_platform(url: str) -> Tuple[Optional[str], Optional[str]]:
     for pattern in tiktok_patterns:
         match = re.match(pattern, url)
         if match:
-            return 'tiktok', url
+            return 'tiktok', url, None
     
-    return None, None
+    return None, None, None
 
 
 def download_video_sync(url: str, platform: str, cancel_event: threading.Event) -> Optional[dict]:
@@ -311,9 +339,32 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
             width = 640
             height = 360
             if platform == 'tiktok':
-                # TikTok обычно вертикальное
                 width = 576
                 height = 1024
+            
+            # Скачиваем превью
+            video_id = info.get('id', '')
+            thumbnail_url = info.get('thumbnail', '')
+            thumb_path = None
+            
+            # Для YouTube качаем превью
+            if platform == 'youtube' and video_id:
+                thumb_path = download_thumbnail(url, video_id)
+                if thumb_path:
+                    logger.info(f"🖼 Превью сохранено: {os.path.basename(thumb_path)}")
+            
+            # Для TikTok используем thumbnail из info
+            if platform == 'tiktok' and thumbnail_url:
+                try:
+                    import requests
+                    thumb_path = os.path.join(DOWNLOAD_FOLDER, f"thumb_{video_id}.jpg")
+                    response = requests.get(thumbnail_url, timeout=10)
+                    if response.status_code == 200:
+                        with open(thumb_path, 'wb') as f:
+                            f.write(response.content)
+                        logger.info(f"🖼 Превью сохранено: {os.path.basename(thumb_path)}")
+                except:
+                    thumb_path = None
             
             return {
                 'title': info.get('title', 'Видео'),
@@ -337,6 +388,7 @@ def download_video_sync(url: str, platform: str, cancel_event: threading.Event) 
                 'age_limit': info.get('age_limit', 0),
                 'width': width,
                 'height': height,
+                'thumb_path': thumb_path,
             }
             
     except Exception as e:
@@ -371,7 +423,8 @@ async def start_handler(event):
         f"• 📺 YouTube: 360p (AVC mp4)\n"
         f"• 🎵 TikTok: лучшее качество\n"
         f"• {'🚀 aria2c 16 потоков' if ARIA2_AVAILABLE else '⚡ Оптимизированная загрузка'}\n"
-        f"• {cookies_status}\n\n"
+        f"• {cookies_status}\n"
+        f"• 🖼 С превью\n\n"
         "**Как использовать:**\n"
         "Просто отправь мне ссылку на видео!\n\n"
         "**Поддерживаемые платформы:**\n"
@@ -391,7 +444,8 @@ async def help_handler(event):
         "2️⃣ Бот мгновенно скачает видео\n"
         "3️⃣ Видео отправится вам\n\n"
         "⚡ **Формат YouTube:** 134+140 (AVC 360p + AAC)\n"
-        "🚀 **Скорость:** максимальная\n\n"
+        "🚀 **Скорость:** максимальная\n"
+        "🖼 **Превью:** автоматически\n\n"
         "Команды: /start /help /cancel"
     )
 
@@ -420,7 +474,7 @@ async def message_handler(event):
     if text.startswith('/'):
         return
     
-    platform, clean_url = detect_platform(text)
+    platform, clean_url, video_id = detect_platform(text)
     
     if not platform:
         return
@@ -467,11 +521,14 @@ async def message_handler(event):
         
         file_path = video_info['file_path']
         file_size_mb = video_info['file_size_mb']
+        thumb_path = video_info.get('thumb_path')
         
         if file_size_mb > MAX_FILE_SIZE_MB:
             await status_msg.edit(f"❌ **Файл слишком большой:** {file_size_mb:.1f} MB")
             if os.path.exists(file_path):
                 os.remove(file_path)
+            if thumb_path and os.path.exists(thumb_path):
+                os.remove(thumb_path)
             return
         
         await status_msg.edit(f"✅ **Скачано!** ({file_size_mb:.1f} MB)\n📤 Отправляю...")
@@ -512,20 +569,26 @@ async def message_handler(event):
             caption = caption[:997] + '...'
         
         # ============================================================
-        # ОТПРАВКА КАК ВИДЕО (с поддержкой стриминга и полного экрана)
+        # ОТПРАВКА КАК ВИДЕО С ПРЕВЬЮ
         # ============================================================
+        
+        # Подготавливаем превью для отправки
+        thumb_file = None
+        if thumb_path and os.path.exists(thumb_path):
+            thumb_file = thumb_path
         
         await client.send_file(
             entity=chat_id,
             file=file_path,
             caption=caption,
-            force_document=False,  # Отправлять как видео, НЕ как файл
+            force_document=False,
+            thumb=thumb_file,  # ← ПРЕВЬЮ
             attributes=[
                 telethon.types.DocumentAttributeVideo(
                     duration=duration if duration > 0 else 0,
                     w=video_info.get('width', 640),
                     h=video_info.get('height', 360),
-                    supports_streaming=True,  # ВОТ ЭТО включает запоминание позиции
+                    supports_streaming=True,
                     round_message=False
                 )
             ],
@@ -542,9 +605,12 @@ async def message_handler(event):
         
         logger.info(f"✅ УСПЕШНО: {video_info['title'][:50]}... | {file_size_mb:.1f}MB | {total_time:.1f}s")
         
+        # Удаляем файлы
         try:
             if os.path.exists(file_path):
                 os.remove(file_path)
+            if thumb_path and os.path.exists(thumb_path):
+                os.remove(thumb_path)
         except Exception as e:
             logger.warning(f"Не удалось удалить файл: {e}")
         
@@ -571,7 +637,7 @@ async def main():
     logger.info(f"🍪 Cookies: {'загружены' if os.path.exists(COOKIES_FILE) else 'НЕТ (медленнее)'}")
     logger.info(f"🚀 Оптимизация: EJS компоненты, без HLS/DASH манифестов, Android клиент")
     logger.info(f"🎬 FFmpeg: copy-режим + faststart для стриминга")
-    logger.info(f"📤 Отправка: видео с поддержкой стриминга и полного экрана")
+    logger.info(f"📤 Отправка: видео с поддержкой стриминга + полный экран + превью")
     
     if ARIA2_AVAILABLE:
         logger.info("🚀 aria2c: 16 потоков")
@@ -589,7 +655,7 @@ async def main():
     print(f"  📺 YouTube: 360p AVC (134+140)")
     print(f"  ⚡ Оптимизированная загрузка")
     print(f"  🍪 Cookies: {'✅ Да' if os.path.exists(COOKIES_FILE) else '❌ Нет'}")
-    print(f"  📤 Видео: стриминг + полный экран")
+    print(f"  📤 Видео: стриминг + полный экран + превью")
     print(f"  🚫 /cancel для отмены")
     print("=" * 60)
     print()
@@ -601,8 +667,9 @@ if __name__ == '__main__':
     try:
         import yt_dlp
         import telethon
+        import requests
     except ImportError as e:
-        print(f"❌ Установите: pip install yt-dlp telethon")
+        print(f"❌ Установите: pip install yt-dlp telethon requests")
         exit(1)
     
     client.loop.run_until_complete(main())
