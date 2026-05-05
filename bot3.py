@@ -881,27 +881,27 @@ async def main():
     
     console_logger.separator("ЗАПУСК БОТА", char="=")
     
-    # Получаем ID чата-хранилища
-    try:
-        entity = await client.get_entity(STORAGE_CHAT)
-        storage_chat_id = entity.id
-        logger.info(f"🗄 Чат-хранилище: {STORAGE_CHAT} (id={storage_chat_id})")
-    except Exception as e:
-        logger.error(f"❌ Не удалось найти чат-хранилище {STORAGE_CHAT}: {e}")
-        logger.warning("⚠️ Бот будет работать без хранилища (пересылка из кэша недоступна)")
-    
     stats = get_stats()
     
     logger.info(f"📺 YouTube: кнопки → точное качество → хранилище")
     logger.info(f"🎵 TikTok: кнопки → точное качество → хранилище")
     logger.info(f"📊 360p | 480p | 720p | 1080p | MP3")
-    logger.info(f"🗄 Хранилище: {STORAGE_CHAT}" + (" ✅" if storage_chat_id else " ❌"))
     logger.info(f"💾 БД: {stats['total_videos']} видео | {stats['total_files']} файлов")
     logger.info(f"🍪 Cookies: {'✅' if os.path.exists(COOKIES_FILE) else '❌'}")
     logger.info(f"🚀 aria2c: {'✅ 16 потоков' if ARIA2_AVAILABLE else '⚡ Встроенный'}")
     
+    # Запускаем клиент ДО получения entity
     await client.start(bot_token=BOT_TOKEN)
     me = await client.get_me()
+    
+    # Получаем ID чата-хранилища ПОСЛЕ запуска
+    try:
+        entity = await client.get_entity(STORAGE_CHAT)
+        storage_chat_id = entity.id
+        logger.info(f"🗄 Чат-хранилище: {STORAGE_CHAT} (id={storage_chat_id}) ✅")
+    except Exception as e:
+        logger.error(f"❌ Не удалось найти чат-хранилище {STORAGE_CHAT}: {e}")
+        logger.warning("⚠️ Бот будет работать без хранилища (пересылка из кэша недоступна)")
     
     logger.info(f"✅ Бот запущен: @{me.username}")
     
@@ -910,22 +910,10 @@ async def main():
     print(f"  🤖 БОТ: @{me.username}")
     print(f"  📺 YouTube + 🎵 TikTok")
     print(f"     360p | 480p | 720p | 1080p | MP3")
-    print(f"  🗄 Хранилище: {STORAGE_CHAT}")
+    print(f"  🗄 Хранилище: {STORAGE_CHAT}" + (" ✅" if storage_chat_id else " ❌"))
     print(f"  💾 БД: {stats['total_videos']} видео")
     print(f"  /stats | /database | 123455 | /cancel")
     print("=" * 60)
     print()
     
     await client.run_until_disconnected()
-
-
-if __name__ == '__main__':
-    try:
-        import yt_dlp
-        import telethon
-        import requests
-    except ImportError as e:
-        print(f"❌ Установите: pip install yt-dlp telethon requests")
-        exit(1)
-    
-    client.loop.run_until_complete(main())
