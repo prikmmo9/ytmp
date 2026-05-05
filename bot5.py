@@ -19,7 +19,7 @@ from channel_monitor import *
 # ============================================================
 API_ID = int(os.getenv('API_ID', '22268845'))
 API_HASH = os.getenv('API_HASH', 'ffbeffdfb86784e12b39aea5f53857d2')
-BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8566350925:AAEOwpPgXhmR3SE_7TapSbzMJnqImnMA-Js')
+BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8566350925:AAEOwpPgXhmR3SE_7TapSbzMJnqImnMA-Js'))
 
 STORAGE_CHAT = -1001776425232  # @copirkaDva
 MAX_FILE_SIZE_MB = 2000
@@ -156,6 +156,10 @@ async def process_download(event, user_id, url, platform, video_id, quality):
     platform_name = "YouTube" if platform == "youtube" else "TikTok"
     start_time = datetime.now()
     
+    # ============================================================
+    # ФУНКЦИИ ПРОГРЕСС-БАРА
+    # ============================================================
+    
     def generate_progress_text(stage: int, stage_name: str, percent: float, 
                                extra_info: str = "", speed: str = "", eta: str = "",
                                title: str = "") -> str:
@@ -204,16 +208,16 @@ async def process_download(event, user_id, url, platform, video_id, quality):
             logger.error(f"Ошибка обновления прогресса: {e}")
     
     # ============================================================
-    # ЭТАП 1: ПРОВЕРКА КЭША
+    # ЭТАП 1: ПРОВЕРКА КЭША (быстро)
     # ============================================================
-    await update_progress(1, "Проверка кэша", 10, "Ищу в базе данных...")
-    await asyncio.sleep(0.3)
+    await update_progress(1, "Проверка кэша", 2, "Ищу в базе данных...")
+    await asyncio.sleep(0.5)
     
     cached = get_cached_file(video_id, quality)
     
     if cached and cached.get('storage_message_id') and cached.get('storage_chat_id'):
         try:
-            await update_progress(1, "Найдено в кэше!", 70, "Пересылаю из хранилища...")
+            await update_progress(1, "Найдено в кэше!", 15, "Пересылаю из хранилища...")
             await asyncio.sleep(0.5)
             
             await client.forward_messages(
@@ -248,17 +252,52 @@ async def process_download(event, user_id, url, platform, video_id, quality):
             logger.warning(f"⚠️ Ошибка пересылки: {e}")
     
     # ============================================================
-    # ЭТАП 1: ПОЛУЧЕНИЕ ИНФОРМАЦИИ
+    # ЭТАП 1: ПОЛУЧЕНИЕ ИНФОРМАЦИИ (2% → 30% за ~80 секунд)
     # ============================================================
-    for i in range(2, 8):
-        if user_id in user_downloads and user_downloads[user_id].is_set():
-            await update_progress(1, "Отменено", 15, "🛑 Загрузка отменена")
-            return
-        percent = 15 + i * 2
-        await update_progress(1, "Получение информации", percent, "Загружаю метаданные видео...")
-        await asyncio.sleep(0.4)
     
-    await update_progress(1, "Информация получена", 30, "Начинаю скачивание...")
+    stage1_total_steps = 16
+    stage1_delay = 5.0  # 80 секунд / 16 шагов = 5 сек на шаг
+    
+    stage1_messages = [
+        (3, "Подключаюсь к YouTube API..."),
+        (6, "Загружаю страницу видео..."),
+        (9, "Извлекаю метаданные..."),
+        (12, "Проверяю доступные форматы..."),
+        (15, "Анализирую видеопотоки..."),
+        (18, "Получаю информацию о разрешении..."),
+        (20, "Проверяю аудиодорожки..."),
+        (22, "Определяю оптимальный формат..."),
+        (24, "Расшифровываю сигнатуры..."),
+        (26, "Подготавливаю ссылки для скачивания..."),
+        (28, "Формирую запрос к CDN..."),
+        (29, "Информация получена! Перехожу к загрузке..."),
+    ]
+    
+    current_msg_index = 0
+    
+    for step in range(1, stage1_total_steps + 1):
+        if user_id in user_downloads and user_downloads[user_id].is_set():
+            await update_progress(1, "Отменено", (step / stage1_total_steps) * 30, "🛑 Загрузка отменена")
+            return
+        
+        # Вычисляем процент (2% → 30%)
+        percent = 2 + (step / stage1_total_steps) * 28
+        
+        # Выбираем сообщение
+        while current_msg_index < len(stage1_messages) and percent >= stage1_messages[current_msg_index][0]:
+            current_msg_index += 1
+        
+        if current_msg_index > 0:
+            current_msg = stage1_messages[current_msg_index - 1][1]
+        else:
+            current_msg = "Инициализация загрузки..."
+        
+        await update_progress(1, "Получение информации", percent, current_msg)
+        await asyncio.sleep(stage1_delay)
+    
+    # Плавный переход к этапу 2
+    await update_progress(1, "Информация получена", 30, "Запускаю скачивание...")
+    await asyncio.sleep(0.5)
     
     cancel_event = threading.Event()
     user_downloads[user_id] = cancel_event
@@ -267,17 +306,16 @@ async def process_download(event, user_id, url, platform, video_id, quality):
         loop = asyncio.get_event_loop()
         
         # ============================================================
-        # ЭТАП 2: СКАЧИВАНИЕ
+        # ЭТАП 2: СКАЧИВАНИЕ (30% → 70%)
         # ============================================================
-        await update_progress(2, "Скачивание видео", 30, "Устанавливаю соединение...")
+        await update_progress(2, "Скачивание видео", 30, "Устанавливаю соединение с сервером...")
         
         def download_progress_callback(percent, speed, eta):
-            # Конвертируем 0-100% загрузки в 30-70% общего прогресса
             mapped_percent = 30 + (percent * 40 / 100)
             
             extra = ""
             if percent < 10:
-                extra = "Устанавливаю соединение с сервером..."
+                extra = "Устанавливаю соединение с CDN..."
             elif percent < 30:
                 extra = "Загружаю видеопоток..."
             elif percent < 60:
@@ -285,7 +323,7 @@ async def process_download(event, user_id, url, platform, video_id, quality):
             elif percent < 90:
                 extra = "Объединяю видео и аудио..."
             else:
-                extra = "Завершаю загрузку..."
+                extra = "Завершаю загрузку файла..."
             
             asyncio.create_task(
                 update_progress(2, "Скачивание", mapped_percent, extra, speed, eta)
@@ -346,7 +384,7 @@ async def process_download(event, user_id, url, platform, video_id, quality):
             return
         
         # ============================================================
-        # ЭТАП 3: ОТПРАВКА
+        # ЭТАП 3: ОТПРАВКА (70% → 100%)
         # ============================================================
         await update_progress(3, "Отправка в Telegram", 70, "Сохраняю в хранилище...", 
                             title=video_title)
@@ -555,7 +593,6 @@ async def channels_handler(event):
 
 @client.on(events.NewMessage(pattern='/subscribe'))
 async def subscribe_handler(event):
-    """Подписка на канал: /subscribe <channel_id или ссылка>"""
     user_id = event.sender_id
     args = event.text.split()
     
@@ -570,12 +607,9 @@ async def subscribe_handler(event):
         return
     
     channel_input = args[1]
-    
-    # Пробуем получить channel_id
     channel_id = None
     channel_name = "Неизвестный канал"
     
-    # Если это ссылка YouTube
     if 'youtube.com/' in channel_input or 'youtu.be/' in channel_input:
         try:
             info = get_video_info(channel_input, 'youtube')
@@ -585,7 +619,6 @@ async def subscribe_handler(event):
         except:
             pass
     
-    # Если это ID канала (начинается с UC)
     if not channel_id and channel_input.startswith('UC'):
         channel_id = channel_input
     
@@ -593,10 +626,8 @@ async def subscribe_handler(event):
         await event.reply("❌ **Не удалось определить ID канала**\nОтправьте ссылку на видео с этого канала сначала.")
         return
     
-    # Подписываем
     subscribe_to_channel(user_id, channel_id, channel_name)
     
-    # Добавляем в таблицу каналов если нет
     existing = get_channel(channel_id)
     if not existing:
         add_or_update_channel(channel_id, channel_name, 'youtube', 
@@ -615,7 +646,6 @@ async def subscribe_handler(event):
 
 @client.on(events.NewMessage(pattern='/unsubscribe'))
 async def unsubscribe_handler(event):
-    """Отписка от канала: /unsubscribe <channel_id>"""
     user_id = event.sender_id
     args = event.text.split()
     
@@ -633,7 +663,6 @@ async def unsubscribe_handler(event):
 
 @client.on(events.NewMessage(pattern='/mysubs'))
 async def mysubs_handler(event):
-    """Показывает подписки пользователя"""
     user_id = event.sender_id
     subs = get_user_subscriptions(user_id)
     
@@ -719,9 +748,7 @@ async def callback_handler(event):
     platform_emoji = "📺" if platform == "youtube" else "🎵"
     platform_name = "YouTube" if platform == "youtube" else "TikTok"
     
-    # ============================================================
-    # ПОКАЗЫВАЕМ ПРОГРЕСС-БАР СРАЗУ ПОСЛЕ ВЫБОРА КАЧЕСТВА
-    # ============================================================
+    # Показываем прогресс-бар сразу после выбора качества
     progress_text = (
         f"{platform_emoji} **{platform_name}** | 📊 {quality_config['description']}\n\n"
         f"🔗 {url}\n\n"
@@ -750,12 +777,11 @@ async def message_handler(event):
     if text.startswith('/'):
         return
     
-    # Кодовое слово для БД
     if text == '123455':
         await database_handler(event)
         return
     
-    # Регистрируем пользователя при любом сообщении
+    # Регистрируем пользователя
     try:
         sender = await event.get_sender()
         add_or_update_user(user_id, username=getattr(sender, 'username', None),
