@@ -1,4 +1,4 @@
-# bot.py - YouTube/TikTok Download Bot с выбором качества
+# bot.py - YouTube/TikTok Download Bot с мгновенным выбором качества
 import os
 import asyncio
 import re
@@ -52,28 +52,28 @@ QUALITY_OPTIONS = {
         'format_tiktok': 'best[height<=360]/best',
         'label': '📺 360p',
         'resolution': (640, 360),
-        'description': '360p (низкое)'
+        'description': '360p'
     },
     '480': {
         'format_youtube': '135+140/18',
         'format_tiktok': 'best[height<=480]/best',
         'label': '📺 480p',
         'resolution': (854, 480),
-        'description': '480p (среднее)'
+        'description': '480p'
     },
     '720': {
         'format_youtube': '136+140/18',
         'format_tiktok': 'best[height<=720]/best',
         'label': '📺 720p',
         'resolution': (1280, 720),
-        'description': '720p (HD)'
+        'description': '720p HD'
     },
     '1080': {
         'format_youtube': '137+140/18',
         'format_tiktok': 'best[height<=1080]/best',
         'label': '📺 1080p',
         'resolution': (1920, 1080),
-        'description': '1080p (Full HD)'
+        'description': '1080p Full HD'
     },
     'mp3': {
         'format_youtube': '140',
@@ -160,135 +160,18 @@ def detect_platform(url: str) -> Tuple[Optional[str], Optional[str], Optional[st
     return None, None, None
 
 
-def get_video_info_sync(url: str, platform: str) -> Optional[dict]:
-    """ТОЛЬКО получает информацию о видео, НЕ скачивает"""
-    logger.info("🔍 Получаю информацию о видео (без скачивания)...")
-    
-    if platform == 'youtube':
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'socket_timeout': 30,
-            'skip_download': True,
-            'cookiefile': COOKIES_FILE if os.path.exists(COOKIES_FILE) else None,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': 'android',
-                    'player_skip': ['web', 'web_safari'],
-                }
-            },
-            'remote_components': ['ejs:github'],
-            'youtube_include_hls_manifest': False,
-            'youtube_include_dash_manifest': True,
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8',
-            }
-        }
-    else:
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'socket_timeout': 30,
-            'skip_download': True,
-            'extractor_args': {
-                'tiktok': {'api_hostname': 'api16-normal-c-useast1a.tiktokv.com'}
-            },
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            }
-        }
-    
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            
-            if not info:
-                return None
-            
-            # Проверяем доступные форматы
-            formats = info.get('formats', [])
-            available_qualities = set()
-            
-            if platform == 'youtube':
-                for fmt in formats:
-                    format_id = fmt.get('format_id', '')
-                    if format_id in ['134', '18']:
-                        available_qualities.add('360')
-                    if format_id in ['135']:
-                        available_qualities.add('480')
-                    if format_id in ['136']:
-                        available_qualities.add('720')
-                    if format_id in ['137']:
-                        available_qualities.add('1080')
-                    if format_id in ['140']:
-                        available_qualities.add('mp3')
-                # Минимум
-                available_qualities.update(['360', 'mp3'])
-            else:
-                # TikTok - проверяем по высоте
-                heights = set()
-                has_audio = False
-                for fmt in formats:
-                    height = fmt.get('height')
-                    if height:
-                        heights.add(height)
-                    if fmt.get('acodec') != 'none':
-                        has_audio = True
-                
-                if heights:
-                    max_height = max(heights)
-                    if max_height >= 360:
-                        available_qualities.add('360')
-                    if max_height >= 480:
-                        available_qualities.add('480')
-                    if max_height >= 720:
-                        available_qualities.add('720')
-                    if max_height >= 1080:
-                        available_qualities.add('1080')
-                
-                if has_audio:
-                    available_qualities.add('mp3')
-                
-                # Минимум для TikTok
-                if not available_qualities:
-                    available_qualities.update(['360', 'mp3'])
-            
-            duration = info.get('duration', 0)
-            if duration:
-                duration = int(duration)
-            
-            logger.info(f"✅ Информация получена: {info.get('title', 'N/A')[:50]}")
-            logger.info(f"📊 Доступные форматы: {sorted(available_qualities)}")
-            
-            return {
-                'title': info.get('title', 'Видео')[:80],
-                'fulltitle': info.get('fulltitle', info.get('title', 'Видео')),
-                'uploader': info.get('uploader', 'Неизвестный автор'),
-                'channel': info.get('channel', ''),
-                'duration': duration,
-                'view_count': info.get('view_count', 0),
-                'like_count': info.get('like_count', 0),
-                'thumbnail': info.get('thumbnail', ''),
-                'video_id': info.get('id', ''),
-                'available_qualities': sorted(list(available_qualities)),
-            }
-    
-    except Exception as e:
-        logger.error(f"Ошибка получения информации: {str(e)[:200]}")
-        return None
-
-
 def download_video_sync(url: str, platform: str, quality: str, cancel_event: threading.Event) -> Optional[dict]:
-    """Скачивает видео ТОЛЬКО после выбора качества"""
+    """
+    Получает информацию И скачивает видео после выбора качества.
+    Всё в одном вызове для скорости.
+    """
     if cancel_event.is_set():
         logger.info("🛑 Загрузка отменена до начала")
         return None
     
     quality_config = QUALITY_OPTIONS.get(quality, QUALITY_OPTIONS['360'])
     
-    logger.info(f"⬇️ Начинаю скачивание: {quality_config['label']}")
-    console_logger.step(f"Скачивание: {quality_config['description']}...", current=2, total=2)
+    logger.info(f"⬇️ Получаю информацию и скачиваю: {quality_config['label']}")
     
     if cancel_event.is_set():
         logger.info("🛑 Загрузка отменена")
@@ -450,6 +333,7 @@ def download_video_sync(url: str, platform: str, quality: str, cancel_event: thr
         ydl_opts['progress_hooks'] = [progress_hook]
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # ОДИН вызов: получает информацию И скачивает
             info = ydl.extract_info(url, download=True)
             
             if not info:
@@ -457,7 +341,7 @@ def download_video_sync(url: str, platform: str, quality: str, cancel_event: thr
                 return None
             
             total_time = time.time() - start_time
-            logger.info(f"⏱ Общее время скачивания: {total_time:.1f}с")
+            logger.info(f"⏱ Общее время: {total_time:.1f}с")
             
             file_path = ydl.prepare_filename(info)
             
@@ -551,22 +435,21 @@ async def start_handler(event):
     
     logger.info(f"📱 /start от {user_name}")
     
-    cookies_status = "✅ Cookies загружены" if os.path.exists(COOKIES_FILE) else "⚠️ Без cookies"
+    cookies_status = "✅ Cookies" if os.path.exists(COOKIES_FILE) else "⚠️ Без cookies"
+    aria_status = "🚀 aria2c" if ARIA2_AVAILABLE else "⚡ Встроенный"
     
     welcome = (
         f"🎬 **Привет, {user_name}!**\n\n"
         "Я - Media Download Bot! 🤖\n\n"
         "⚡ **Как я работаю:**\n"
         "1️⃣ Отправляешь ссылку\n"
-        "2️⃣ Я показываю информацию о видео\n"
-        "3️⃣ Ты выбираешь качество\n"
-        "4️⃣ Я скачиваю и отправляю\n\n"
+        "2️⃣ Сразу появляются кнопки качества\n"
+        "3️⃣ Выбираешь — я качаю и отправляю\n\n"
         f"📺 **YouTube:** 360p | 480p | 720p | 1080p | MP3\n"
         f"🎵 **TikTok:** 360p | 480p | 720p | 1080p | MP3\n"
-        f"• {'🚀 aria2c 16 потоков' if ARIA2_AVAILABLE else '⚡ Оптимизированная загрузка'}\n"
-        f"• {cookies_status}\n"
-        f"• 🖼 С превью\n\n"
-        "⚠️ Макс. размер: 2GB | Отмена: /cancel"
+        f"• {aria_status}\n"
+        f"• {cookies_status}\n\n"
+        "⚠️ Макс. размер: 2GB | /cancel для отмены"
     )
     
     await event.reply(welcome)
@@ -611,16 +494,15 @@ async def callback_handler(event):
     
     quality_config = QUALITY_OPTIONS.get(quality, QUALITY_OPTIONS['360'])
     
-    console_logger.separator(f"НАЧАЛО ЗАГРУЗКИ для {user_id}")
-    logger.info(f"📥 Платформа: {platform.upper()}")
-    logger.info(f"📥 Качество: {quality_config['label']}")
-    logger.info(f"🔗 URL: {url}")
+    console_logger.separator(f"ЗАГРУЗКА для {user_id}")
+    logger.info(f"🌐 {platform.upper()} | 📊 {quality_config['description']}")
+    logger.info(f"🔗 {url}")
     
     await event.edit(
-        f"🔄 **Начинаю загрузку...**\n"
+        f"🔄 **Загружаю...**\n"
         f"🌐 {platform.upper()}\n"
         f"📊 {quality_config['label']}\n"
-        f"⏳ Пожалуйста, подождите...",
+        f"⏳ Получаю информацию и скачиваю...",
         buttons=None
     )
     
@@ -639,7 +521,7 @@ async def callback_handler(event):
         try:
             video_info = await asyncio.wait_for(download_task, timeout=DOWNLOAD_TIMEOUT)
         except asyncio.TimeoutError:
-            await event.edit("⏰ **Таймаут загрузки**\nПопробуйте позже или другое качество")
+            await event.edit("⏰ **Таймаут загрузки**\nПопробуйте другое качество")
             return
         
         if cancel_event.is_set() or video_info is None:
@@ -653,7 +535,7 @@ async def callback_handler(event):
         duration = video_info.get('duration', 0)
         
         if file_size_mb > MAX_FILE_SIZE_MB:
-            await event.edit(f"❌ **Файл слишком большой:** {file_size_mb:.1f} MB\nМаксимум: {MAX_FILE_SIZE_MB} MB")
+            await event.edit(f"❌ **Слишком большой файл:** {file_size_mb:.1f} MB")
             try:
                 if os.path.exists(file_path):
                     os.remove(file_path)
@@ -746,7 +628,7 @@ async def callback_handler(event):
         total_time = (datetime.now() - start_time).total_seconds()
         await event.delete()
         
-        logger.info(f"✅ УСПЕШНО: {video_info['title'][:50]}... | {file_size_mb:.1f}MB | {quality_config['label']} | {total_time:.1f}s")
+        logger.info(f"✅ УСПЕШНО: {video_info['title'][:50]}... | {file_size_mb:.1f}MB | {quality_config['description']} | {total_time:.1f}s")
         
         try:
             if os.path.exists(file_path):
@@ -759,7 +641,7 @@ async def callback_handler(event):
     except Exception as e:
         if not cancel_event.is_set():
             logger.error(f"Ошибка: {str(e)[:200]}")
-            await event.edit(f"❌ **Ошибка при загрузке:** {str(e)[:200]}")
+            await event.edit(f"❌ **Ошибка:** {str(e)[:200]}")
     
     finally:
         if user_id in user_downloads:
@@ -797,80 +679,36 @@ async def message_handler(event):
     platform_name = "YouTube" if platform == "youtube" else "TikTok"
     
     console_logger.separator(f"НОВЫЙ ЗАПРОС от {user_id}")
-    logger.info(f"{platform_emoji} Платформа: {platform_name}")
-    logger.info(f"🔗 URL: {clean_url}")
+    logger.info(f"{platform_emoji} {platform_name}: {clean_url}")
     
-    # Показываем статус получения информации
-    status_msg = await event.reply(
-        f"🔍 **Получаю информацию о видео...**\n"
-        f"🌐 {platform_name}\n"
-        f"⏳ Пожалуйста, подождите..."
-    )
-    
-    # Получаем информацию (БЕЗ скачивания)
-    video_info = get_video_info_sync(clean_url, platform)
-    
-    if not video_info:
-        await status_msg.edit(
-            f"❌ **Не удалось получить информацию**\n"
-            f"Проверьте ссылку или попробуйте позже"
-        )
-        return
-    
-    # Сохраняем для callback
+    # Сохраняем данные для callback
     user_selections[user_id] = {
         'url': clean_url,
         'platform': platform,
-        'info': video_info,
     }
     
-    # Формируем информацию о видео
-    duration = video_info.get('duration', 0)
-    if duration > 0:
-        minutes, secs = divmod(int(duration), 60)
-        duration_str = f"{minutes}:{secs:02d}"
-    else:
-        duration_str = "Неизвестно"
+    # МГНОВЕННО показываем кнопки выбора качества
+    quality_text = (
+        f"{platform_emoji} **{platform_name}**\n\n"
+        f"🔗 {clean_url}\n\n"
+        f"🎯 **Выберите качество:**"
+    )
     
-    if platform == 'youtube':
-        info_text = (
-            f"📺 **{video_info.get('title', 'Видео')}**\n\n"
-            f"👤 **Канал:** {video_info.get('uploader', 'N/A')}\n"
-            f"⏱ **Длительность:** {duration_str}\n"
-        )
-    else:
-        info_text = (
-            f"🎵 **{video_info.get('title', 'Видео')}**\n\n"
-            f"👤 **Автор:** @{video_info.get('uploader', 'N/A')}\n"
-            f"⏱ **Длительность:** {duration_str}\n"
-        )
+    buttons = [
+        [
+            Button.inline("📺 360p", data="quality:360"),
+            Button.inline("📺 480p", data="quality:480"),
+        ],
+        [
+            Button.inline("📺 720p HD", data="quality:720"),
+            Button.inline("📺 1080p Full HD", data="quality:1080"),
+        ],
+        [
+            Button.inline("🎵 MP3 (аудио)", data="quality:mp3"),
+        ],
+    ]
     
-    if video_info.get('view_count'):
-        info_text += f"👁 **Просмотров:** {video_info['view_count']:,}\n"
-    
-    info_text += f"\n🎯 **Выберите качество:** 👇"
-    
-    # Создаем кнопки
-    available = video_info.get('available_qualities', ['360', '480', '720', '1080', 'mp3'])
-    buttons = []
-    
-    video_qualities = ['360', '480', '720', '1080']
-    video_buttons = []
-    for q in video_qualities:
-        if q in available:
-            q_config = QUALITY_OPTIONS[q]
-            video_buttons.append(Button.inline(q_config['label'], data=f"quality:{q}"))
-    
-    for i in range(0, len(video_buttons), 2):
-        row = video_buttons[i:i+2]
-        buttons.append(row)
-    
-    if 'mp3' in available:
-        buttons.append([Button.inline("🎵 MP3 (аудио 192 kbps)", data="quality:mp3")])
-    
-    await status_msg.edit(info_text, buttons=buttons)
-    
-    logger.info(f"📋 Показан выбор качества для: {video_info.get('title', 'N/A')[:50]}")
+    await event.reply(quality_text, buttons=buttons)
 
 
 # ============================================================
@@ -880,12 +718,12 @@ async def message_handler(event):
 async def main():
     console_logger.separator("ЗАПУСК БОТА", char="=")
     
-    logger.info(f"📺 YouTube: 1. Инфо → 2. Выбор качества → 3. Скачивание")
-    logger.info(f"🎵 TikTok: 1. Инфо → 2. Выбор качества → 3. Скачивание")
+    logger.info(f"📺 YouTube: мгновенные кнопки → загрузка")
+    logger.info(f"🎵 TikTok: мгновенные кнопки → загрузка")
     logger.info(f"📊 Качество: 360p | 480p | 720p | 1080p | MP3")
     logger.info(f"🍪 Cookies: {'загружены' if os.path.exists(COOKIES_FILE) else 'НЕТ'}")
     logger.info(f"🚀 aria2c: {'16 потоков' if ARIA2_AVAILABLE else 'встроенный загрузчик'}")
-    logger.info(f"📤 Видео: стриминг + полный экран + превью")
+    logger.info(f"📤 Отправка: стриминг + полный экран + превью")
     
     await client.start(bot_token=BOT_TOKEN)
     me = await client.get_me()
@@ -895,10 +733,9 @@ async def main():
     print()
     print("=" * 60)
     print(f"  🤖 БОТ: @{me.username}")
-    print(f"  📺 YouTube: 1. Инфо → 2. Выбор → 3. Скачивание")
-    print(f"  🎵 TikTok: 1. Инфо → 2. Выбор → 3. Скачивание")
+    print(f"  📺 YouTube: мгновенные кнопки → загрузка")
+    print(f"  🎵 TikTok: мгновенные кнопки → загрузка")
     print(f"     Качество: 360p | 480p | 720p | 1080p | MP3")
-    print(f"  ⚡ Оптимизированная загрузка")
     print(f"  🍪 Cookies: {'✅ Да' if os.path.exists(COOKIES_FILE) else '❌ Нет'}")
     print(f"  🚫 /cancel для отмены")
     print("=" * 60)
