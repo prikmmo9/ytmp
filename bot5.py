@@ -196,37 +196,21 @@ async def process_download(event, user_id, url, platform, video_id, quality):
             await update_progress(1, "Найдено в кэше!", 15, "Пересылаю из хранилища...")
             await asyncio.sleep(0.5)
             
-            caption = format_caption({
-                'title': cached['title'],
-                'fulltitle': cached['title'],
-                'uploader': cached.get('channel_name', 'Неизвестный'),
-                'channel': cached.get('channel_name', 'Неизвестный'),
-                'quality': cached['quality_label'],
-                'url': cached['video_url'],
-                'upload_date': '',
-            }, platform, from_cache=True)
-            
-            forwarded = await client.forward_messages(
+            # Просто пересылаем сообщение (подпись уже правильная, сохранена при первом скачивании)
+            await client.forward_messages(
                 entity=event.chat_id,
                 messages=cached['storage_message_id'],
                 from_peer=cached['storage_chat_id'],
             )
             
-            if forwarded:
-                try:
-                    await client.edit_message(event.chat_id, forwarded[0].id, text=caption)
-                except:
-                    await client.send_message(event.chat_id, caption)
-            
             update_downloads_count(video_id, quality)
             
-            await update_progress(1, "Готово! Мгновенная отправка", 100, 
-                                f"✅ {cached['file_size_mb']:.1f} MB из кэша")
+            await update_progress(1, "Готово!", 100, f"✅ {cached['file_size_mb']:.1f} MB из кэша")
             await asyncio.sleep(1.5)
             await event.delete()
             return
         except Exception as e:
-            logger.warning(f"⚠️ Ошибка пересылки: {e}")
+            logger.warning(f"⚠️ Ошибка пересылки из кэша: {e}")
     
     # ============================================================
     # ЭТАП 1: ПОЛУЧЕНИЕ ИНФОРМАЦИИ (2% → 30% за ~80 секунд)
@@ -361,14 +345,16 @@ async def process_download(event, user_id, url, platform, video_id, quality):
         await update_progress(3, "Отправка в Telegram", 70, "Сохраняю в хранилище...", 
                             title=video_title)
         
+        # Формируем подпись
+        caption = format_caption(video_info, platform)
+        
+        # Сохраняем в хранилище СРАЗУ с правильной подписью
         storage_message = None
         if storage_chat_id:
             try:
-                storage_caption = f"[{quality_config['quality_label']}] {video_title[:200]}\n{url}"
-                
                 if is_audio:
                     storage_message = await client.send_file(
-                        entity=storage_chat_id, file=file_path, caption=storage_caption,
+                        entity=storage_chat_id, file=file_path, caption=caption,
                         attributes=[telethon.types.DocumentAttributeAudio(
                             duration=duration if duration > 0 else 0,
                             title=video_title[:100],
@@ -377,7 +363,7 @@ async def process_download(event, user_id, url, platform, video_id, quality):
                     )
                 else:
                     storage_message = await client.send_file(
-                        entity=storage_chat_id, file=file_path, caption=storage_caption,
+                        entity=storage_chat_id, file=file_path, caption=caption,
                         force_document=False,
                         thumb=thumb_path if thumb_path and os.path.exists(thumb_path) else None,
                         attributes=[telethon.types.DocumentAttributeVideo(
@@ -394,22 +380,16 @@ async def process_download(event, user_id, url, platform, video_id, quality):
         
         await update_progress(3, "Отправка в Telegram", 80, "Отправляю вам...", title=video_title)
         
-        # Формируем подпись
-        caption = format_caption(video_info, platform)
-        
-        # Отправляем ОДНИМ сообщением (видео + подпись)
+        # Отправляем пользователю
         if storage_message:
-            forwarded = await client.forward_messages(
+            # Пересылаем из хранилища (подпись уже внутри)
+            await client.forward_messages(
                 event.chat_id, 
                 storage_message.id, 
                 from_peer=storage_chat_id,
             )
-            if forwarded:
-                try:
-                    await client.edit_message(event.chat_id, forwarded[0].id, text=caption)
-                except:
-                    await client.send_message(event.chat_id, caption)
         else:
+            # Отправляем напрямую с подписью
             if is_audio:
                 await client.send_file(
                     event.chat_id, file_path, caption=caption,
@@ -645,10 +625,7 @@ async def mysubs_handler(event):
     subs = get_user_subscriptions(user_id)
     
     if not subs:
-        await event.reply(
-            "📭 **У вас нет подписок**\n\n"
-            "Подписаться: `/subscribe <channel_id>`"
-        )
+        await event.reply("📭 **У вас нет подписок**\n\nПодписаться: `/subscribe <channel_id>`")
         return
     
     text = f"📋 **Ваши подписки ({len(subs)}):**\n\n"
