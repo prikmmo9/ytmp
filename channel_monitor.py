@@ -5,6 +5,7 @@ import asyncio
 from typing import List, Dict, Optional
 import requests
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 
 from logger_config import create_logger
 
@@ -16,6 +17,9 @@ logger = create_logger(
 ).get_logger()
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'video_cache.db')
+
+# Пул потоков для проверки RSS (чтобы не блокировать event loop)
+rss_executor = ThreadPoolExecutor(max_workers=3)
 
 
 def get_monitored_channels() -> List[Dict]:
@@ -39,8 +43,8 @@ def get_monitored_channels() -> List[Dict]:
     ]
 
 
-def check_channel_rss(channel_id: str) -> List[Dict]:
-    """Проверяет RSS-ленту канала на новые видео"""
+def check_channel_rss_sync(channel_id: str) -> List[Dict]:
+    """Проверяет RSS-ленту канала на новые видео (синхронная)"""
     rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
     
     try:
@@ -87,6 +91,12 @@ def check_channel_rss(channel_id: str) -> List[Dict]:
         return []
 
 
+async def check_channel_rss(channel_id: str) -> List[Dict]:
+    """Асинхронная обёртка для проверки RSS"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(rss_executor, check_channel_rss_sync, channel_id)
+
+
 def is_video_in_db(video_id: str) -> bool:
     """Проверяет, есть ли видео в БД"""
     conn = sqlite3.connect(DB_PATH)
@@ -112,7 +122,7 @@ def add_new_video_to_db(video_info: Dict):
 
 async def check_all_channels(bot_client=None, send_notifications: bool = True, 
                              notify_callback=None) -> List[Dict]:
-    """Проверяет все каналы на новые видео"""
+    """Проверяет все каналы на новые видео (асинхронно, не блокирует бота)"""
     channels = get_monitored_channels()
     
     if not channels:
@@ -122,41 +132,49 @@ async def check_all_channels(bot_client=None, send_notifications: bool = True,
     
     all_new_videos = []
     
-    for channel in channels[:20]:
+    for i, channel in enumerate(channels[:20]):
         channel_id = channel['channel_id']
         channel_name = channel['name']
         
-        new_videos = check_channel_rss(channel_id)
+        # Даём возможность обработать другие события каждые 2 канала
+        if i % 2 == 0:
+            await asyncio.sleep(0.1)
         
-        if new_videos:
-            logger.info(f"📺 {channel_name}: +{len(new_videos)} новых видео")
+        try:
+            new_videos = await check_channel_rss(channel_id)
             
-            for video in new_videos:
-                add_new_video_to_db(video)
+            if new_videos:
+                logger.info(f"📺 {channel_name}: +{len(new_videos)} новых видео")
                 
-                # Отправка уведомлений
-                if bot_client and send_notifications:
-                    try:
-                        # Уведомление в хранилище
-                        message = (
-                            f"🆕 **Новое видео!**\n\n"
-                            f"📺 **{video['title'][:100]}**\n"
-                            f"👤 **Канал:** {channel_name}\n"
-                            f"🔗 {video['url']}\n"
-                            f"📅 {video.get('published', '')[:10]}"
-                        )
-                        await bot_client.send_message(-1001776425232, message)
-                    except:
-                        pass
+                for video in new_videos:
+                    add_new_video_to_db(video)
+                    
+                    # Отправка уведомлений в хранилище
+                    if bot_client and send_notifications:
+                        try:
+                            message = (
+                                f"🆕 **Новое видео!**\n\n"
+                                f"📺 **{video['title'][:100]}**\n"
+                                f"👤 **Канал:** {channel_name}\n"
+                                f"🔗 {video['url']}\n"
+                                f"📅 {video.get('published', '')[:10]}"
+                            )
+                            await bot_client.send_message(-1001776425232, message)
+                            await asyncio.sleep(0.1)  # Небольшая пауза между сообщениями
+                        except:
+                            pass
                     
                     # Уведомление подписчикам
                     if notify_callback:
                         try:
                             await notify_callback(channel_id, video['title'], video['url'])
+                            await asyncio.sleep(0.1)
                         except:
                             pass
-            
-            all_new_videos.extend(new_videos)
+                
+                all_new_videos.extend(new_videos)
+        except Exception as e:
+            logger.error(f"❌ Ошибка проверки канала {channel_name}: {str(e)[:100]}")
     
     if all_new_videos:
         logger.info(f"✅ Найдено {len(all_new_videos)} новых видео")
@@ -166,11 +184,11 @@ async def check_all_channels(bot_client=None, send_notifications: bool = True,
 
 async def monitor_loop(bot_client=None, interval_minutes: int = 30, 
                        notify_callback=None):
-    """Бесконечный цикл мониторинга"""
+    """Бесконечный цикл мониторинга (не блокирует бота)"""
     logger.info(f"🔄 Мониторинг каналов запущен (интервал: {interval_minutes} мин)")
     
-    # Первая проверка через 1 минуту
-    await asyncio.sleep(60)
+    # Первая проверка через 30 секунд после запуска
+    await asyncio.sleep(30)
     
     while True:
         try:
@@ -182,4 +200,5 @@ async def monitor_loop(bot_client=None, interval_minutes: int = 30,
         except Exception as e:
             logger.error(f"❌ Ошибка мониторинга: {str(e)[:200]}")
         
+        # Ждём следующий интервал (с возможностью прерывания)
         await asyncio.sleep(interval_minutes * 60)
