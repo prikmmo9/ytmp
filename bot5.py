@@ -1,4 +1,4 @@
-# bot.py - Основной файл бота с многопоточностью, прогресс-баром и мониторингом
+# bot.py - Основной файл бота с прогресс-баром, многопоточностью и мониторингом
 import os
 import asyncio
 import logging
@@ -19,7 +19,7 @@ from channel_monitor import *
 # ============================================================
 API_ID = int(os.getenv('API_ID', '22268845'))
 API_HASH = os.getenv('API_HASH', 'ffbeffdfb86784e12b39aea5f53857d2')
-BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8566350925:AAEOwpPgXhmR3SE_7TapSbzMJnqImnMA-Js'))
+BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8566350925:AAEOwpPgXhmR3SE_7TapSbzMJnqImnMA-Js')
 
 STORAGE_CHAT = -1001776425232  # @copirkaDva
 MAX_FILE_SIZE_MB = 2000
@@ -156,10 +156,6 @@ async def process_download(event, user_id, url, platform, video_id, quality):
     platform_name = "YouTube" if platform == "youtube" else "TikTok"
     start_time = datetime.now()
     
-    # ============================================================
-    # ФУНКЦИИ ПРОГРЕСС-БАРА
-    # ============================================================
-    
     def generate_progress_text(stage: int, stage_name: str, percent: float, 
                                extra_info: str = "", speed: str = "", eta: str = "",
                                title: str = "") -> str:
@@ -254,9 +250,8 @@ async def process_download(event, user_id, url, platform, video_id, quality):
     # ============================================================
     # ЭТАП 1: ПОЛУЧЕНИЕ ИНФОРМАЦИИ (2% → 30% за ~80 секунд)
     # ============================================================
-    
     stage1_total_steps = 16
-    stage1_delay = 5.0  # 80 секунд / 16 шагов = 5 сек на шаг
+    stage1_delay = 5.0  # 16 * 5 = 80 секунд
     
     stage1_messages = [
         (3, "Подключаюсь к YouTube API..."),
@@ -280,10 +275,8 @@ async def process_download(event, user_id, url, platform, video_id, quality):
             await update_progress(1, "Отменено", (step / stage1_total_steps) * 30, "🛑 Загрузка отменена")
             return
         
-        # Вычисляем процент (2% → 30%)
         percent = 2 + (step / stage1_total_steps) * 28
         
-        # Выбираем сообщение
         while current_msg_index < len(stage1_messages) and percent >= stage1_messages[current_msg_index][0]:
             current_msg_index += 1
         
@@ -295,7 +288,6 @@ async def process_download(event, user_id, url, platform, video_id, quality):
         await update_progress(1, "Получение информации", percent, current_msg)
         await asyncio.sleep(stage1_delay)
     
-    # Плавный переход к этапу 2
     await update_progress(1, "Информация получена", 30, "Запускаю скачивание...")
     await asyncio.sleep(0.5)
     
@@ -389,7 +381,6 @@ async def process_download(event, user_id, url, platform, video_id, quality):
         await update_progress(3, "Отправка в Telegram", 70, "Сохраняю в хранилище...", 
                             title=video_title)
         
-        # Сохраняем в хранилище
         storage_message = None
         if storage_chat_id:
             try:
@@ -423,7 +414,6 @@ async def process_download(event, user_id, url, platform, video_id, quality):
         
         await update_progress(3, "Отправка в Telegram", 80, "Отправляю вам...", title=video_title)
         
-        # Отправляем пользователю
         caption = format_caption(video_info, platform)
         
         if storage_message:
@@ -451,7 +441,6 @@ async def process_download(event, user_id, url, platform, video_id, quality):
         
         await update_progress(3, "Завершение", 95, "Сохраняю в базу данных...", title=video_title)
         
-        # Сохраняем в БД
         if storage_message:
             save_complete_info_with_storage(
                 video_id=video_id, platform=platform, quality=quality,
@@ -462,7 +451,6 @@ async def process_download(event, user_id, url, platform, video_id, quality):
             )
             logger.info(f"✅ Сохранено в БД: {video_title[:50]}... [{quality}]")
         
-        # Финальный прогресс
         total_time = (datetime.now() - start_time).total_seconds()
         await update_progress(3, "Готово! ✅", 100, 
                             f"{file_size_mb:.1f} MB за {total_time:.0f}с | {quality_config['description']}",
@@ -470,13 +458,11 @@ async def process_download(event, user_id, url, platform, video_id, quality):
         await asyncio.sleep(2)
         await event.delete()
         
-        # Чистим временные файлы
         try:
             if os.path.exists(file_path): os.remove(file_path)
             if thumb_path and os.path.exists(thumb_path): os.remove(thumb_path)
         except: pass
         
-        # Уведомляем подписчиков
         try:
             full_info = video_info.get('full_info', {})
             channel_id_db = full_info.get('channel_id', '')
@@ -759,7 +745,6 @@ async def callback_handler(event):
     
     await event.edit(progress_text, buttons=None)
     
-    # Запускаем загрузку с семафором
     async with download_semaphore:
         await process_download(event, user_id, url, platform, video_id, quality)
 
@@ -781,7 +766,6 @@ async def message_handler(event):
         await database_handler(event)
         return
     
-    # Регистрируем пользователя
     try:
         sender = await event.get_sender()
         add_or_update_user(user_id, username=getattr(sender, 'username', None),
