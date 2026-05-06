@@ -36,7 +36,7 @@ os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 QUALITY_OPTIONS = {
     '360': {
         'format_youtube': 'bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]/18',
-        'format_tiktok': 'best[height<=360]/best',
+        'format_tiktok': 'best[ext=mp4]/best',
         'label': '📺 360p',
         'quality_label': '360p',
         'resolution': (640, 360),
@@ -45,7 +45,7 @@ QUALITY_OPTIONS = {
     },
     '480': {
         'format_youtube': 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]/18',
-        'format_tiktok': 'best[height<=480]/best',
+        'format_tiktok': 'best[ext=mp4]/best',
         'label': '📺 480p',
         'quality_label': '480p',
         'resolution': (854, 480),
@@ -54,7 +54,7 @@ QUALITY_OPTIONS = {
     },
     '720': {
         'format_youtube': 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]/136+140/18',
-        'format_tiktok': 'best[height<=720]/best',
+        'format_tiktok': 'best[ext=mp4]/best',
         'label': '📺 720p HD',
         'quality_label': '720p HD',
         'resolution': (1280, 720),
@@ -63,7 +63,7 @@ QUALITY_OPTIONS = {
     },
     '1080': {
         'format_youtube': 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]/137+140/18',
-        'format_tiktok': 'best[height<=1080]/best',
+        'format_tiktok': 'best[ext=mp4]/best',
         'label': '📺 1080p Full HD',
         'quality_label': '1080p Full HD',
         'resolution': (1920, 1080),
@@ -328,7 +328,7 @@ def download_video(url: str, platform: str, quality: str,
             'format': format_str,
             'outtmpl': f'{DOWNLOAD_FOLDER}/%(uploader)s_%(title).100s_%(id)s.%(ext)s',
             'extractor_args': {'tiktok': {'api_hostname': 'api16-normal-c-useast1a.tiktokv.com'}},
-            'http_headers': {'User-Agent': 'Mozilla/5.0'}
+            'http_headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         }
         
         if ARIA2_AVAILABLE:
@@ -385,7 +385,7 @@ def download_video(url: str, platform: str, quality: str,
             
             if not os.path.exists(file_path):
                 base = os.path.splitext(file_path)[0]
-                search_exts = ['.mp3', '.m4a'] if is_audio else ['.mp4', '.webm', '.mkv', '.mov']
+                search_exts = ['.mp3', '.m4a', '.webm'] if is_audio else ['.mp4', '.webm', '.mkv', '.mov']
                 for ext in search_exts:
                     alt_path = base + ext
                     if os.path.exists(alt_path):
@@ -437,7 +437,6 @@ def download_video(url: str, platform: str, quality: str,
             # Проверка минимальной длительности (ТОЛЬКО для видео, не для аудио)
             if not is_audio and duration < MIN_DURATION_SECONDS:
                 logger.info(f"⏱ Видео слишком короткое ({duration}с < {MIN_DURATION_SECONDS}с). Пропускаем.")
-                # Удаляем скачанный файл
                 try:
                     if os.path.exists(file_path):
                         os.remove(file_path)
@@ -521,7 +520,6 @@ def download_video(url: str, platform: str, quality: str,
 # ТЕСТИРОВАНИЕ
 # ============================================================
 if __name__ == '__main__':
-    # Тест: определение платформы
     test_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
     platform, clean_url, video_id = detect_platform(test_url)
     print(f"URL: {test_url}")
