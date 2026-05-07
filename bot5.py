@@ -893,7 +893,7 @@ if __name__ == '__main__':
     level=logging.DEBUG,
     detailed=True,
     show_separators=True
-
+)
 logger = console_logger.get_logger()
 
 init_database()
