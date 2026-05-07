@@ -13,7 +13,7 @@ from logger_config import create_logger
 # Логгер для этого модуля
 logger = create_logger(
     name='Downloader',
-    level=20,  # INFO
+    level=20,
     detailed=False,
     show_separators=False
 ).get_logger()
@@ -24,7 +24,7 @@ logger = create_logger(
 DOWNLOAD_FOLDER = 'downloads'
 COOKIES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
 
-# Минимальная длительность видео (в секундах)
+# Минимальная длительность видео (только для YouTube)
 MIN_DURATION_SECONDS = 78  # 1.3 минуты
 
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
@@ -167,9 +167,7 @@ def download_thumbnail_tiktok(thumbnail_url: str, video_id: str) -> Optional[str
 
 
 def get_video_info(url: str, platform: str) -> Optional[dict]:
-    """
-    Получает информацию о видео БЕЗ скачивания.
-    """
+    """Получает информацию о видео БЕЗ скачивания."""
     logger.info(f"🔍 Получаю информацию: {platform.upper()}")
     
     if platform == 'youtube':
@@ -238,16 +236,6 @@ def download_video(url: str, platform: str, quality: str,
                    progress_callback=None, cancel_event: threading.Event = None) -> Optional[dict]:
     """
     Скачивает видео с выбранным качеством.
-    
-    Args:
-        url: ссылка на видео
-        platform: 'youtube' или 'tiktok'
-        quality: '360', '480', '720', '1080', 'mp3'
-        progress_callback: функция для прогресса (percent, speed, eta)
-        cancel_event: threading.Event для отмены
-    
-    Returns:
-        dict с информацией о скачанном видео или None
     """
     if cancel_event and cancel_event.is_set():
         logger.info("🛑 Загрузка отменена")
@@ -263,7 +251,6 @@ def download_video(url: str, platform: str, quality: str,
     is_audio = quality_config['audio_only']
     format_str = quality_config['format_youtube'] if platform == 'youtube' else quality_config['format_tiktok']
     
-    # Настройка yt-dlp
     if platform == 'youtube':
         cookies_exists = os.path.exists(COOKIES_FILE)
         
@@ -346,7 +333,6 @@ def download_video(url: str, platform: str, quality: str,
             }]
     
     try:
-        # Хук прогресса
         def progress_hook(d):
             if d['status'] == 'downloading':
                 try:
@@ -377,7 +363,6 @@ def download_video(url: str, platform: str, quality: str,
             
             total_time = time.time() - start_time
             
-            # Находим файл
             file_path = ydl.prepare_filename(info)
             if is_audio:
                 file_path = os.path.splitext(file_path)[0] + '.mp3'
@@ -409,7 +394,6 @@ def download_video(url: str, platform: str, quality: str,
             if duration:
                 duration = int(duration)
             
-            # Формируем full_info
             full_info = {
                 'title': info.get('title', 'Видео'),
                 'fulltitle': info.get('fulltitle', info.get('title', 'Видео')),
@@ -433,8 +417,8 @@ def download_video(url: str, platform: str, quality: str,
                 'format_id': info.get('format_id', '?'),
             }
             
-            # Проверка минимальной длительности (ТОЛЬКО для видео, не для аудио)
-            if not is_audio and duration < MIN_DURATION_SECONDS:
+            # Проверка минимальной длительности ТОЛЬКО для YouTube
+            if not is_audio and platform == 'youtube' and duration < MIN_DURATION_SECONDS:
                 logger.info(f"⏱ Видео слишком короткое ({duration}с < {MIN_DURATION_SECONDS}с). Пропускаем.")
                 try:
                     if os.path.exists(file_path):
@@ -464,23 +448,18 @@ def download_video(url: str, platform: str, quality: str,
                     'too_short': True,
                 }
             
-            # Размеры видео
             if not is_audio:
                 width = info.get('width') or quality_config['resolution'][0] or 640
                 height = info.get('height') or quality_config['resolution'][1] or 360
-                # Для TikTok используем вертикальные размеры
-                if platform == 'tiktok':
-                    if not info.get('width'):
-                        width = 576
-                        height = 1024
+                if platform == 'tiktok' and not info.get('width'):
+                    width = 576
+                    height = 1024
             else:
                 width, height = 0, 0
             
-            # Обновляем full_info с реальными размерами
             full_info['width'] = int(width)
             full_info['height'] = int(height)
             
-            # Превью
             thumb_path = None
             if not is_audio:
                 if platform == 'youtube':
@@ -520,9 +499,6 @@ def download_video(url: str, platform: str, quality: str,
         raise
 
 
-# ============================================================
-# ТЕСТИРОВАНИЕ
-# ============================================================
 if __name__ == '__main__':
     test_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
     platform, clean_url, video_id = detect_platform(test_url)
@@ -530,16 +506,4 @@ if __name__ == '__main__':
     print(f"Platform: {platform}")
     print(f"Video ID: {video_id}")
     print(f"aria2: {ARIA2_AVAILABLE}")
-    print(f"Min duration: {MIN_DURATION_SECONDS}с")
-    
-    # Тест TikTok
-    tiktok_urls = [
-        "https://www.tiktok.com/@user/video/123456789",
-        "https://vt.tiktok.com/ZS9ghQeuA/",
-        "https://vm.tiktok.com/ABCDEF/",
-    ]
-    for tiktok_url in tiktok_urls:
-        plat, url, vid = detect_platform(tiktok_url)
-        print(f"\nTikTok URL: {tiktok_url}")
-        print(f"Platform: {plat}")
-        print(f"Video ID: {vid}")
+    print(f"Min duration (YouTube only): {MIN_DURATION_SECONDS}с")
