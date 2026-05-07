@@ -102,7 +102,6 @@ async def notify_subscribers(channel_id: str, video_title: str, video_url: str):
 
 
 async def process_download(event, user_id, url, platform, video_id, quality):
-    # Выбираем конфигурацию качества в зависимости от платформы
     if platform == 'tiktok':
         quality_config = TIKTOK_QUALITY_OPTIONS.get(quality, TIKTOK_QUALITY_OPTIONS['360'])
     else:
@@ -173,7 +172,7 @@ async def process_download(event, user_id, url, platform, video_id, quality):
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка пересылки: {e}")
     
-    # Этап 1: Получение информации
+    # Этап 1: Получение информации (имитация)
     stage1_messages = [
         (3, "Подключаюсь к серверу..."),
         (6, "Загружаю страницу видео..."),
@@ -228,7 +227,6 @@ async def process_download(event, user_id, url, platform, video_id, quality):
                 extra = "Завершаю загрузку файла..."
             asyncio.create_task(update_progress(2, "Скачивание", mapped_percent, extra, speed, eta))
         
-        # Используем правильную функцию скачивания
         if platform == 'tiktok':
             download_func = download_tiktok_video
             download_args = (url, quality, download_progress_callback, cancel_event)
@@ -423,6 +421,7 @@ async def start_handler(event):
         f"⏱ YouTube мин. длительность: 1.3 минуты\n"
         f"• Кэш: {stats['total_videos']} видео\n"
         f"• Пользователей: {stats['total_users']}\n\n"
+        "✅ - качество уже в кэше\n"
         "⚠️ Макс. 2GB | /stats | /monitor | /channels | /subscribe | /mysubs | /cancel"
     )
     await event.reply(welcome)
@@ -640,21 +639,37 @@ async def message_handler(event):
     if cached_qualities:
         quality_text += "⚡ **В кэше:**\n"
         for q in cached_qualities:
-            quality_text += f"• {q['label']}: {q['size_mb']:.1f} MB\n"
+            quality_text += f"• {q['label']}: {q['size_mb']:.1f} MB (скачано {q['downloads']} раз)\n"
         quality_text += "\n"
     
     if platform == 'tiktok':
         quality_text += "🎯 **Выберите формат:**"
+        
+        has_video = any(q['quality'] == '360' for q in cached_qualities)
+        has_mp3 = any(q['quality'] == 'mp3' for q in cached_qualities)
+        
+        video_label = "✅ 🎵 Видео (со звуком)" if has_video else "🎵 Видео (со звуком)"
+        mp3_label = "✅ 🎵 MP3 (аудио)" if has_mp3 else "🎵 MP3 (аудио)"
+        
         buttons = [
-            [Button.inline("🎵 Видео (со звуком)", data="quality:360")],
-            [Button.inline("🎵 MP3 (аудио)", data="quality:mp3")],
+            [Button.inline(video_label, data="quality:360")],
+            [Button.inline(mp3_label, data="quality:mp3")],
         ]
     else:
         quality_text += "🎯 **Выберите качество:**\n⏱ Мин. длительность: 1.3 мин."
+        
+        cached_map = {q['quality']: True for q in cached_qualities}
+        
+        btn_360 = "✅ 📺 360p" if '360' in cached_map else "📺 360p"
+        btn_480 = "✅ 📺 480p" if '480' in cached_map else "📺 480p"
+        btn_720 = "✅ 📺 720p HD" if '720' in cached_map else "📺 720p HD"
+        btn_1080 = "✅ 📺 1080p Full HD" if '1080' in cached_map else "📺 1080p Full HD"
+        btn_mp3 = "✅ 🎵 MP3 (аудио)" if 'mp3' in cached_map else "🎵 MP3 (аудио)"
+        
         buttons = [
-            [Button.inline("📺 360p", data="quality:360"), Button.inline("📺 480p", data="quality:480")],
-            [Button.inline("📺 720p HD", data="quality:720"), Button.inline("📺 1080p Full HD", data="quality:1080")],
-            [Button.inline("🎵 MP3 (аудио)", data="quality:mp3")],
+            [Button.inline(btn_360, data="quality:360"), Button.inline(btn_480, data="quality:480")],
+            [Button.inline(btn_720, data="quality:720"), Button.inline(btn_1080, data="quality:1080")],
+            [Button.inline(btn_mp3, data="quality:mp3")],
         ]
     
     await event.reply(quality_text, buttons=buttons)
@@ -695,6 +710,7 @@ async def main():
     print(f"  🤖 БОТ: @{me.username}")
     print(f"  📺 YouTube: 360p | 480p | 720p | 1080p | MP3")
     print(f"  🎵 TikTok: Видео со звуком | MP3")
+    print(f"  ✅ - качество в кэше")
     print(f"  💾 БД: {stats['total_videos']} видео | 👥 {stats['total_users']} пользователей")
     print("=" * 60)
     print()
