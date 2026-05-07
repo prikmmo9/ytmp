@@ -36,7 +36,7 @@ os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 QUALITY_OPTIONS = {
     '360': {
         'format_youtube': 'bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]/18',
-        'format_tiktok': 'best[height<=360]/best',
+        'format_tiktok': 'bestvideo+bestaudio/best[ext=mp4]/best',
         'label': '📺 360p',
         'quality_label': '360p',
         'resolution': (640, 360),
@@ -45,7 +45,7 @@ QUALITY_OPTIONS = {
     },
     '480': {
         'format_youtube': 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]/18',
-        'format_tiktok': 'best[height<=480]/best',
+        'format_tiktok': 'bestvideo+bestaudio/best[ext=mp4]/best',
         'label': '📺 480p',
         'quality_label': '480p',
         'resolution': (854, 480),
@@ -54,7 +54,7 @@ QUALITY_OPTIONS = {
     },
     '720': {
         'format_youtube': 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]/136+140/18',
-        'format_tiktok': 'best[height<=720]/best',
+        'format_tiktok': 'bestvideo+bestaudio/best[ext=mp4]/best',
         'label': '📺 720p HD',
         'quality_label': '720p HD',
         'resolution': (1280, 720),
@@ -63,7 +63,7 @@ QUALITY_OPTIONS = {
     },
     '1080': {
         'format_youtube': 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]/137+140/18',
-        'format_tiktok': 'best[height<=1080]/best',
+        'format_tiktok': 'bestvideo+bestaudio/best[ext=mp4]/best',
         'label': '📺 1080p Full HD',
         'quality_label': '1080p Full HD',
         'resolution': (1920, 1080),
@@ -117,17 +117,16 @@ def detect_platform(url: str) -> Tuple[Optional[str], Optional[str], Optional[st
         video_id = url.strip()
         return 'youtube', f"https://www.youtube.com/watch?v={video_id}", video_id
     
-    # TikTok
-    tiktok_patterns = [
-        r'(?:https?://)?(?:www\.)?tiktok\.com/@[\w.-]+/video/(\d+)',
-        r'(?:https?://)?(?:www\.)?tiktok\.com/t/(\w+)',
-        r'(?:https?://)?vm\.tiktok\.com/(\w+)',
-        r'(?:https?://)?vt\.tiktok\.com/(\w+)',
-    ]
-    for pattern in tiktok_patterns:
-        match = re.match(pattern, url)
-        if match:
-            return 'tiktok', url, None
+    # TikTok - полная ссылка: tiktok.com/@user/video/123456789
+    match = re.search(r'/video/(\d+)', url)
+    if match:
+        return 'tiktok', url, match.group(1)
+    
+    # TikTok - короткие ссылки: vm.tiktok.com/XXXX или vt.tiktok.com/XXXX
+    if 'tiktok.com/' in url:
+        parts = url.rstrip('/').split('/')
+        temp_id = parts[-1].split('?')[0] if parts else 'tiktok_unknown'
+        return 'tiktok', url, temp_id
     
     return None, None, None
 
@@ -328,7 +327,7 @@ def download_video(url: str, platform: str, quality: str,
             'format': format_str,
             'outtmpl': f'{DOWNLOAD_FOLDER}/%(uploader)s_%(title).100s_%(id)s.%(ext)s',
             'extractor_args': {'tiktok': {'api_hostname': 'api16-normal-c-useast1a.tiktokv.com'}},
-            'http_headers': {'User-Agent': 'Mozilla/5.0'}
+            'http_headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         }
         
         if ARIA2_AVAILABLE:
@@ -385,7 +384,7 @@ def download_video(url: str, platform: str, quality: str,
             
             if not os.path.exists(file_path):
                 base = os.path.splitext(file_path)[0]
-                search_exts = ['.mp3', '.m4a'] if is_audio else ['.mp4', '.webm', '.mkv', '.mov']
+                search_exts = ['.mp3', '.m4a', '.webm'] if is_audio else ['.mp4', '.webm', '.mkv', '.mov']
                 for ext in search_exts:
                     alt_path = base + ext
                     if os.path.exists(alt_path):
@@ -410,7 +409,7 @@ def download_video(url: str, platform: str, quality: str,
             if duration:
                 duration = int(duration)
             
-            # Формируем full_info до проверки длительности
+            # Формируем full_info
             full_info = {
                 'title': info.get('title', 'Видео'),
                 'fulltitle': info.get('fulltitle', info.get('title', 'Видео')),
@@ -437,7 +436,6 @@ def download_video(url: str, platform: str, quality: str,
             # Проверка минимальной длительности (ТОЛЬКО для видео, не для аудио)
             if not is_audio and duration < MIN_DURATION_SECONDS:
                 logger.info(f"⏱ Видео слишком короткое ({duration}с < {MIN_DURATION_SECONDS}с). Пропускаем.")
-                # Удаляем скачанный файл
                 try:
                     if os.path.exists(file_path):
                         os.remove(file_path)
@@ -470,6 +468,11 @@ def download_video(url: str, platform: str, quality: str,
             if not is_audio:
                 width = info.get('width') or quality_config['resolution'][0] or 640
                 height = info.get('height') or quality_config['resolution'][1] or 360
+                # Для TikTok используем вертикальные размеры
+                if platform == 'tiktok':
+                    if not info.get('width'):
+                        width = 576
+                        height = 1024
             else:
                 width, height = 0, 0
             
@@ -521,7 +524,6 @@ def download_video(url: str, platform: str, quality: str,
 # ТЕСТИРОВАНИЕ
 # ============================================================
 if __name__ == '__main__':
-    # Тест: определение платформы
     test_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
     platform, clean_url, video_id = detect_platform(test_url)
     print(f"URL: {test_url}")
@@ -529,3 +531,15 @@ if __name__ == '__main__':
     print(f"Video ID: {video_id}")
     print(f"aria2: {ARIA2_AVAILABLE}")
     print(f"Min duration: {MIN_DURATION_SECONDS}с")
+    
+    # Тест TikTok
+    tiktok_urls = [
+        "https://www.tiktok.com/@user/video/123456789",
+        "https://vt.tiktok.com/ZS9ghQeuA/",
+        "https://vm.tiktok.com/ABCDEF/",
+    ]
+    for tiktok_url in tiktok_urls:
+        plat, url, vid = detect_platform(tiktok_url)
+        print(f"\nTikTok URL: {tiktok_url}")
+        print(f"Platform: {plat}")
+        print(f"Video ID: {vid}")
