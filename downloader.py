@@ -117,7 +117,7 @@ def detect_platform(url: str) -> Tuple[Optional[str], Optional[str], Optional[st
         video_id = url.strip()
         return 'youtube', f"https://www.youtube.com/watch?v={video_id}", video_id
     
-    # TikTok
+    # TikTok - извлекаем ID из URL
     tiktok_patterns = [
         r'(?:https?://)?(?:www\.)?tiktok\.com/@[\w.-]+/video/(\d+)',
         r'(?:https?://)?(?:www\.)?tiktok\.com/t/(\w+)',
@@ -127,7 +127,20 @@ def detect_platform(url: str) -> Tuple[Optional[str], Optional[str], Optional[st
     for pattern in tiktok_patterns:
         match = re.match(pattern, url)
         if match:
-            return 'tiktok', url, None
+            # Извлекаем video_id из URL
+            video_id = match.group(1) if match.lastindex and match.lastindex >= 1 else None
+            if not video_id:
+                # Fallback: берём последнюю часть URL
+                parts = url.rstrip('/').split('/')
+                video_id = parts[-1].split('?')[0]
+            return 'tiktok', url, video_id
+    
+    # TikTok короткие ссылки без цифр - используем хеш
+    if 'tiktok.com/' in url or 'vm.tiktok.com/' in url or 'vt.tiktok.com/' in url:
+        parts = url.rstrip('/').split('/')
+        video_id = parts[-1].split('?')[0]
+        if video_id:
+            return 'tiktok', url, video_id
     
     return None, None, None
 
@@ -239,16 +252,6 @@ def download_video(url: str, platform: str, quality: str,
                    progress_callback=None, cancel_event: threading.Event = None) -> Optional[dict]:
     """
     Скачивает видео с выбранным качеством.
-    
-    Args:
-        url: ссылка на видео
-        platform: 'youtube' или 'tiktok'
-        quality: '360', '480', '720', '1080', 'mp3'
-        progress_callback: функция для прогресса (percent, speed, eta)
-        cancel_event: threading.Event для отмены
-    
-    Returns:
-        dict с информацией о скачанном видео или None
     """
     if cancel_event and cancel_event.is_set():
         logger.info("🛑 Загрузка отменена")
@@ -347,7 +350,6 @@ def download_video(url: str, platform: str, quality: str,
             }]
     
     try:
-        # Хук прогресса
         def progress_hook(d):
             if d['status'] == 'downloading':
                 try:
@@ -378,7 +380,6 @@ def download_video(url: str, platform: str, quality: str,
             
             total_time = time.time() - start_time
             
-            # Находим файл
             file_path = ydl.prepare_filename(info)
             if is_audio:
                 file_path = os.path.splitext(file_path)[0] + '.mp3'
@@ -410,7 +411,6 @@ def download_video(url: str, platform: str, quality: str,
             if duration:
                 duration = int(duration)
             
-            # Формируем full_info до проверки длительности
             full_info = {
                 'title': info.get('title', 'Видео'),
                 'fulltitle': info.get('fulltitle', info.get('title', 'Видео')),
@@ -434,7 +434,6 @@ def download_video(url: str, platform: str, quality: str,
                 'format_id': info.get('format_id', '?'),
             }
             
-            # Проверка минимальной длительности (ТОЛЬКО для видео, не для аудио)
             if not is_audio and duration < MIN_DURATION_SECONDS:
                 logger.info(f"⏱ Видео слишком короткое ({duration}с < {MIN_DURATION_SECONDS}с). Пропускаем.")
                 try:
@@ -465,18 +464,15 @@ def download_video(url: str, platform: str, quality: str,
                     'too_short': True,
                 }
             
-            # Размеры видео
             if not is_audio:
                 width = info.get('width') or quality_config['resolution'][0] or 640
                 height = info.get('height') or quality_config['resolution'][1] or 360
             else:
                 width, height = 0, 0
             
-            # Обновляем full_info с реальными размерами
             full_info['width'] = int(width)
             full_info['height'] = int(height)
             
-            # Превью
             thumb_path = None
             if not is_audio:
                 if platform == 'youtube':
@@ -527,3 +523,10 @@ if __name__ == '__main__':
     print(f"Video ID: {video_id}")
     print(f"aria2: {ARIA2_AVAILABLE}")
     print(f"Min duration: {MIN_DURATION_SECONDS}с")
+    
+    # Тест TikTok
+    tiktok_url = "https://vt.tiktok.com/ZS9ghQeuA/"
+    plat, url, vid = detect_platform(tiktok_url)
+    print(f"\nTikTok URL: {tiktok_url}")
+    print(f"Platform: {plat}")
+    print(f"Video ID: {vid}")
