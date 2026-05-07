@@ -352,7 +352,8 @@ async def process_download(event, user_id, url, platform, video_id, quality):
                         )],
                         supports_streaming=True)
         
-        if storage_message and video_id:
+        # Сохраняем в БД ТОЛЬКО YouTube видео
+        if storage_message and video_id and platform == 'youtube':
             save_complete_info_with_storage(
                 video_id=video_id, platform=platform, quality=quality,
                 info=video_info.get('full_info', video_info),
@@ -360,6 +361,7 @@ async def process_download(event, user_id, url, platform, video_id, quality):
                 storage_message_id=storage_message.id,
                 file_size_mb=file_size_mb,
             )
+            logger.info(f"✅ Сохранено в БД: {video_title[:50]}... [{quality}]")
         
         total_time = (datetime.now() - start_time).total_seconds()
         await update_progress(3, "Готово! ✅", 100,
@@ -405,7 +407,7 @@ async def start_handler(event):
         "Я - Media Download Bot! 🤖\n\n"
         f"📺 **YouTube:** 360p | 480p | 720p | 1080p | MP3\n"
         f"🎵 **TikTok:** Видео со звуком | MP3\n"
-        f"⏱ Мин. длительность: 1.3 минуты\n"
+        f"⏱ YouTube мин. длительность: 1.3 минуты\n"
         f"• Кэш: {stats['total_videos']} видео\n"
         f"• Пользователей: {stats['total_users']}\n\n"
         "⚠️ Макс. 2GB | /stats | /monitor | /channels | /subscribe | /mysubs | /cancel"
