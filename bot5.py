@@ -11,16 +11,7 @@ from telethon import TelegramClient, events, Button
 
 from logger_config import create_logger
 from database import *
-from downloader import (
-    QUALITY_OPTIONS,
-    ARIA2_AVAILABLE,
-    COOKIES_FILE,
-    MIN_DURATION_SECONDS,
-    detect_platform,
-    get_video_info,
-    download_video,
-    DOWNLOAD_FOLDER
-)
+from downloader import *
 from channel_monitor import *
 
 # ============================================================
@@ -219,7 +210,7 @@ async def process_download(event, user_id, url, platform, video_id, quality):
     stage1_delay = 5.0
     
     stage1_messages = [
-        (3, "Подключаюсь к YouTube API..."),
+        (3, "Подключаюсь к серверу..."),
         (6, "Загружаю страницу видео..."),
         (9, "Извлекаю метаданные..."),
         (12, "Проверяю доступные форматы..."),
@@ -347,6 +338,7 @@ async def process_download(event, user_id, url, platform, video_id, quality):
         
         caption = format_caption(video_info, platform)
         
+        # Сохраняем в хранилище
         storage_message = None
         if storage_chat_id:
             try:
@@ -360,24 +352,40 @@ async def process_download(event, user_id, url, platform, video_id, quality):
                         )],
                     )
                 else:
-                    storage_message = await client.send_file(
-                        entity=storage_chat_id, file=file_path, caption=caption,
-                        force_document=False,
-                        thumb=thumb_path if thumb_path and os.path.exists(thumb_path) else None,
-                        attributes=[telethon.types.DocumentAttributeVideo(
-                            duration=duration if duration > 0 else 0,
-                            w=video_info.get('width', 640),
-                            h=video_info.get('height', 360),
-                            supports_streaming=True, round_message=False
-                        )],
-                        supports_streaming=True,
-                    )
+                    if platform == 'tiktok':
+                        # TikTok: без превью, правильные размеры
+                        storage_message = await client.send_file(
+                            entity=storage_chat_id, file=file_path, caption=caption,
+                            force_document=False,
+                            attributes=[telethon.types.DocumentAttributeVideo(
+                                duration=duration if duration > 0 else 0,
+                                w=video_info.get('width', 576),
+                                h=video_info.get('height', 1024),
+                                supports_streaming=True, round_message=False
+                            )],
+                            supports_streaming=True,
+                        )
+                    else:
+                        # YouTube: с превью
+                        storage_message = await client.send_file(
+                            entity=storage_chat_id, file=file_path, caption=caption,
+                            force_document=False,
+                            thumb=thumb_path if thumb_path and os.path.exists(thumb_path) else None,
+                            attributes=[telethon.types.DocumentAttributeVideo(
+                                duration=duration if duration > 0 else 0,
+                                w=video_info.get('width', 640),
+                                h=video_info.get('height', 360),
+                                supports_streaming=True, round_message=False
+                            )],
+                            supports_streaming=True,
+                        )
                 logger.info(f"💾 Сохранено в хранилище: msg_id={storage_message.id}")
             except Exception as e:
                 logger.error(f"❌ Ошибка сохранения в хранилище: {e}")
         
         await update_progress(3, "Отправка в Telegram", 80, "Отправляю вам...", title=video_title)
         
+        # Отправляем пользователю
         if storage_message:
             await client.forward_messages(
                 event.chat_id, 
@@ -394,17 +402,32 @@ async def process_download(event, user_id, url, platform, video_id, quality):
                         performer=video_info.get('uploader', 'Unknown'),
                     )])
             else:
-                await client.send_file(
-                    event.chat_id, file_path, caption=caption,
-                    force_document=False,
-                    thumb=thumb_path if thumb_path and os.path.exists(thumb_path) else None,
-                    attributes=[telethon.types.DocumentAttributeVideo(
-                        duration=duration if duration > 0 else 0,
-                        w=video_info.get('width', 640),
-                        h=video_info.get('height', 360),
-                        supports_streaming=True, round_message=False
-                    )],
-                    supports_streaming=True)
+                if platform == 'tiktok':
+                    # TikTok: без превью
+                    await client.send_file(
+                        event.chat_id, file_path, caption=caption,
+                        force_document=False,
+                        attributes=[telethon.types.DocumentAttributeVideo(
+                            duration=duration if duration > 0 else 0,
+                            w=video_info.get('width', 576),
+                            h=video_info.get('height', 1024),
+                            supports_streaming=True, round_message=False
+                        )],
+                        supports_streaming=True,
+                    )
+                else:
+                    # YouTube: с превью
+                    await client.send_file(
+                        event.chat_id, file_path, caption=caption,
+                        force_document=False,
+                        thumb=thumb_path if thumb_path and os.path.exists(thumb_path) else None,
+                        attributes=[telethon.types.DocumentAttributeVideo(
+                            duration=duration if duration > 0 else 0,
+                            w=video_info.get('width', 640),
+                            h=video_info.get('height', 360),
+                            supports_streaming=True, round_message=False
+                        )],
+                        supports_streaming=True)
         
         await update_progress(3, "Завершение", 95, "Сохраняю в базу данных...", title=video_title)
         
@@ -475,10 +498,10 @@ async def start_handler(event):
         "⚡ **Как я работаю:**\n"
         "1️⃣ Отправляешь ссылку\n"
         "2️⃣ Мгновенно появляются кнопки\n"
-        "3️⃣ Выбираешь качество — я качаю\n"
+        "3️⃣ Выбираешь — я качаю\n"
         "4️⃣ Сохраняю в хранилище и кэширую\n\n"
         f"📺 **YouTube:** 360p | 480p | 720p | 1080p | MP3\n"
-        f"🎵 **TikTok:** Видео | MP3\n"
+        f"🎵 **TikTok:** Видео со звуком | MP3\n"
         f"⏱ Мин. длительность: 1.3 минуты\n"
         f"• 🚀 aria2c: {'✅' if ARIA2_AVAILABLE else '❌'}\n"
         f"• 🍪 Cookies: {'✅' if os.path.exists(COOKIES_FILE) else '❌'}\n"
@@ -840,7 +863,7 @@ async def main():
     print("=" * 60)
     print(f"  🤖 БОТ: @{me.username}")
     print(f"  📺 YouTube: 360p | 480p | 720p | 1080p | MP3")
-    print(f"  🎵 TikTok: Видео | MP3")
+    print(f"  🎵 TikTok: Видео со звуком | MP3")
     print(f"  🔄 Многопоточность: до {MAX_CONCURRENT_DOWNLOADS} загрузок")
     print(f"  ⏱ Мин. длительность: {MIN_DURATION_SECONDS}с (1.3 мин)")
     print(f"  🗄 Хранилище: {'✅' if storage_chat_id else '❌'}")
