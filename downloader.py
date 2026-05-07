@@ -314,7 +314,8 @@ def download_video(url: str, platform: str, quality: str,
             'format': format_str,
             'outtmpl': f'{DOWNLOAD_FOLDER}/%(uploader)s_%(title).100s_%(id)s.%(ext)s',
             'extractor_args': {'tiktok': {'api_hostname': 'api16-normal-c-useast1a.tiktokv.com'}},
-            'http_headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            'http_headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'},
+            'ignoreerrors': True,
         }
         
         if ARIA2_AVAILABLE:
@@ -331,6 +332,7 @@ def download_video(url: str, platform: str, quality: str,
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }]
+            ydl_opts['prefer_ffmpeg'] = True
     
     try:
         def progress_hook(d):
@@ -369,7 +371,7 @@ def download_video(url: str, platform: str, quality: str,
             
             if not os.path.exists(file_path):
                 base = os.path.splitext(file_path)[0]
-                search_exts = ['.mp3', '.m4a', '.webm'] if is_audio else ['.mp4', '.webm', '.mkv', '.mov']
+                search_exts = ['.mp3', '.m4a', '.webm', '.opus', '.aac'] if is_audio else ['.mp4', '.webm', '.mkv', '.mov']
                 for ext in search_exts:
                     alt_path = base + ext
                     if os.path.exists(alt_path):
@@ -384,6 +386,10 @@ def download_video(url: str, platform: str, quality: str,
                     possible = glob.glob(f"{DOWNLOAD_FOLDER}/*{info.get('id', '')}*")
                     if possible:
                         file_path = possible[0]
+                        if is_audio and not file_path.endswith('.mp3'):
+                            import shutil
+                            shutil.move(file_path, os.path.splitext(file_path)[0] + '.mp3')
+                            file_path = os.path.splitext(file_path)[0] + '.mp3'
                     else:
                         logger.error("Файл не найден!")
                         return None
