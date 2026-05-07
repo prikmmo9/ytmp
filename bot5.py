@@ -11,7 +11,16 @@ from telethon import TelegramClient, events, Button
 
 from logger_config import create_logger
 from database import *
-from downloader import *
+from downloader import (
+    QUALITY_OPTIONS,
+    ARIA2_AVAILABLE,
+    COOKIES_FILE,
+    MIN_DURATION_SECONDS,
+    detect_platform,
+    get_video_info,
+    download_video,
+    DOWNLOAD_FOLDER
+)
 from channel_monitor import *
 
 # ============================================================
@@ -57,28 +66,22 @@ storage_chat_id = None
 
 def format_caption(video_info: dict, platform: str, from_cache: bool = False) -> str:
     """Форматирует подпись к видео"""
-    # Название видео
     title = video_info.get('fulltitle', video_info.get('title', 'Без названия'))
-    
-    # Канал
     channel = video_info.get('channel') or video_info.get('uploader', 'Неизвестный')
-    
-    # Дата загрузки
-    upload_date = video_info.get('upload_date', '')
-    if upload_date and len(upload_date) == 8:
-        upload_date = f"{upload_date[6:8]}.{upload_date[4:6]}.{upload_date[0:4]}"
-    elif not upload_date:
-        upload_date = "Неизвестно"
-    
-    # Качество
     quality_str = video_info.get('quality', '')
     
-    caption = (
-        f"📺 **{title}**\n\n"
-        f"👤 **Канал:** {channel}\n"
-        f"📅 **Дата загрузки:** {upload_date}\n"
-        f"📊 **Качество:** {quality_str}\n"
-    )
+    if platform == 'tiktok':
+        caption = (
+            f"🎵 **{title}**\n\n"
+            f"👤 **Автор:** @{channel}\n"
+            f"📊 **Формат:** {quality_str}\n"
+        )
+    else:
+        caption = (
+            f"📺 **{title}**\n\n"
+            f"👤 **Канал:** {channel}\n"
+            f"📊 **Качество:** {quality_str}\n"
+        )
     
     if from_cache:
         caption += "⚡ **Переслано из хранилища**\n"
@@ -139,7 +142,6 @@ async def process_download(event, user_id, url, platform, video_id, quality):
     def generate_progress_text(stage: int, stage_name: str, percent: float, 
                                extra_info: str = "", speed: str = "", eta: str = "",
                                title: str = "") -> str:
-        """Генерирует текст прогресс-бара"""
         bar_length = 20
         filled = int(bar_length * percent / 100)
         bar = "█" * filled + "░" * (bar_length - filled)
@@ -176,7 +178,6 @@ async def process_download(event, user_id, url, platform, video_id, quality):
     async def update_progress(stage: int, stage_name: str, percent: float, 
                               extra_info: str = "", speed: str = "", eta: str = "",
                               title: str = ""):
-        """Обновляет сообщение с прогресс-баром"""
         try:
             text = generate_progress_text(stage, stage_name, percent, extra_info, speed, eta, title)
             await event.edit(text)
@@ -196,7 +197,6 @@ async def process_download(event, user_id, url, platform, video_id, quality):
             await update_progress(1, "Найдено в кэше!", 15, "Пересылаю из хранилища...")
             await asyncio.sleep(0.5)
             
-            # Просто пересылаем сообщение (подпись уже правильная, сохранена при первом скачивании)
             await client.forward_messages(
                 entity=event.chat_id,
                 messages=cached['storage_message_id'],
@@ -345,10 +345,8 @@ async def process_download(event, user_id, url, platform, video_id, quality):
         await update_progress(3, "Отправка в Telegram", 70, "Сохраняю в хранилище...", 
                             title=video_title)
         
-        # Формируем подпись
         caption = format_caption(video_info, platform)
         
-        # Сохраняем в хранилище СРАЗУ с правильной подписью
         storage_message = None
         if storage_chat_id:
             try:
@@ -380,16 +378,13 @@ async def process_download(event, user_id, url, platform, video_id, quality):
         
         await update_progress(3, "Отправка в Telegram", 80, "Отправляю вам...", title=video_title)
         
-        # Отправляем пользователю
         if storage_message:
-            # Пересылаем из хранилища (подпись уже внутри)
             await client.forward_messages(
                 event.chat_id, 
                 storage_message.id, 
                 from_peer=storage_chat_id,
             )
         else:
-            # Отправляем напрямую с подписью
             if is_audio:
                 await client.send_file(
                     event.chat_id, file_path, caption=caption,
@@ -483,7 +478,7 @@ async def start_handler(event):
         "3️⃣ Выбираешь качество — я качаю\n"
         "4️⃣ Сохраняю в хранилище и кэширую\n\n"
         f"📺 **YouTube:** 360p | 480p | 720p | 1080p | MP3\n"
-        f"🎵 **TikTok:** 360p | 480p | 720p | 1080p | MP3\n"
+        f"🎵 **TikTok:** Видео | MP3\n"
         f"⏱ Мин. длительность: 1.3 минуты\n"
         f"• 🚀 aria2c: {'✅' if ARIA2_AVAILABLE else '❌'}\n"
         f"• 🍪 Cookies: {'✅' if os.path.exists(COOKIES_FILE) else '❌'}\n"
@@ -702,7 +697,6 @@ async def callback_handler(event):
     platform_emoji = "📺" if platform == "youtube" else "🎵"
     platform_name = "YouTube" if platform == "youtube" else "TikTok"
     
-    # Показываем прогресс-бар сразу после выбора качества
     progress_text = (
         f"{platform_emoji} **{platform_name}** | 📊 {quality_config['description']}\n\n"
         f"🔗 {url}\n\n"
@@ -778,21 +772,28 @@ async def message_handler(event):
             quality_text += f"• {q['label']}: {q['size_mb']:.1f} MB (скачано {q['downloads']} раз)\n"
         quality_text += "\n"
     
-    quality_text += "🎯 **Выберите качество:**\n⏱ Мин. длительность: 1.3 мин."
-    
-    buttons = [
-        [
-            Button.inline("📺 360p", data="quality:360"),
-            Button.inline("📺 480p", data="quality:480"),
-        ],
-        [
-            Button.inline("📺 720p HD", data="quality:720"),
-            Button.inline("📺 1080p Full HD", data="quality:1080"),
-        ],
-        [
-            Button.inline("🎵 MP3 (аудио)", data="quality:mp3"),
-        ],
-    ]
+    # Разные кнопки для разных платформ
+    if platform == 'tiktok':
+        quality_text += "🎯 **Выберите формат:**"
+        buttons = [
+            [Button.inline("🎵 Видео (со звуком)", data="quality:360")],
+            [Button.inline("🎵 MP3 (аудио)", data="quality:mp3")],
+        ]
+    else:
+        quality_text += "🎯 **Выберите качество:**\n⏱ Мин. длительность: 1.3 мин."
+        buttons = [
+            [
+                Button.inline("📺 360p", data="quality:360"),
+                Button.inline("📺 480p", data="quality:480"),
+            ],
+            [
+                Button.inline("📺 720p HD", data="quality:720"),
+                Button.inline("📺 1080p Full HD", data="quality:1080"),
+            ],
+            [
+                Button.inline("🎵 MP3 (аудио)", data="quality:mp3"),
+            ],
+        ]
     
     await event.reply(quality_text, buttons=buttons)
 
@@ -810,7 +811,7 @@ async def main():
     channels = get_monitored_channels()
     
     logger.info(f"📺 YouTube + 🎵 TikTok | 🔄 Многопоточность: до {MAX_CONCURRENT_DOWNLOADS} загрузок")
-    logger.info(f"⏱ Мин. длительность: 78с (1.3 мин)")
+    logger.info(f"⏱ Мин. длительность: {MIN_DURATION_SECONDS}с (1.3 мин)")
     logger.info(f"💾 БД: {stats['total_videos']} видео | 👥 {stats['total_users']} пользователей")
     logger.info(f"👤 Каналов: {stats['total_channels']} | 🔍 Мониторинг: {len(channels)}")
     logger.info(f"🍪 Cookies: {'✅' if os.path.exists(COOKIES_FILE) else '❌'} | 🚀 aria2c: {'✅' if ARIA2_AVAILABLE else '❌'}")
@@ -838,9 +839,10 @@ async def main():
     print()
     print("=" * 60)
     print(f"  🤖 БОТ: @{me.username}")
-    print(f"  📺 YouTube + 🎵 TikTok")
+    print(f"  📺 YouTube: 360p | 480p | 720p | 1080p | MP3")
+    print(f"  🎵 TikTok: Видео | MP3")
     print(f"  🔄 Многопоточность: до {MAX_CONCURRENT_DOWNLOADS} загрузок")
-    print(f"  ⏱ Мин. длительность: 1.3 минуты")
+    print(f"  ⏱ Мин. длительность: {MIN_DURATION_SECONDS}с (1.3 мин)")
     print(f"  🗄 Хранилище: {'✅' if storage_chat_id else '❌'}")
     print(f"  💾 БД: {stats['total_videos']} видео | 👥 {stats['total_users']} пользователей")
     print(f"  🔍 Мониторинг: {len(channels)} каналов")
