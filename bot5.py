@@ -810,7 +810,7 @@ async def main():
     channels = get_monitored_channels()
     
     logger.info(f"📺 YouTube + 🎵 TikTok | 🔄 Многопоточность: до {MAX_CONCURRENT_DOWNLOADS} загрузок")
-    logger.info(f"⏱ Мин. длительность: {MIN_DURATION_SECONDS}с (1.3 мин)")
+    logger.info(f"⏱ Мин. длительность: 78с (1.3 мин)")
     logger.info(f"💾 БД: {stats['total_videos']} видео | 👥 {stats['total_users']} пользователей")
     logger.info(f"👤 Каналов: {stats['total_channels']} | 🔍 Мониторинг: {len(channels)}")
     logger.info(f"🍪 Cookies: {'✅' if os.path.exists(COOKIES_FILE) else '❌'} | 🚀 aria2c: {'✅' if ARIA2_AVAILABLE else '❌'}")
