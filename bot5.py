@@ -889,7 +889,7 @@ if __name__ == '__main__':
         print(f"❌ Установите: pip install yt-dlp telethon requests")
         exit(1)
     
-    client.loop.run_until_complete(main())    name='MediaBot',
+    client.loop.run_until_complete(main()    name='MediaBot',
     level=logging.DEBUG,
     detailed=True,
     show_separators=True
