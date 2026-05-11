@@ -98,7 +98,8 @@ def detect_youtube(url: str) -> Tuple[Optional[str], Optional[str], Optional[str
     youtube_patterns = [
         r'(?:https?://)?(?:www\.)?youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})',
         r'(?:https?://)?(?:www\.)?youtu\.be/([a-zA-Z0-9_-]{11})',
-        r'(?:https?://)?(?:www\.)?youtube\.com/shorts/([a-zA-Z0-9_-]{11})'
+        r'(?:https?://)?(?:www\.)?youtube\.com/shorts/([a-zA-Z0-9_-]{11})',
+        r'(?:https?://)?(?:www\.)?youtube\.com/live/([a-zA-Z0-9_-]{11})',  # Поддержка YouTube Live
     ]
     for pattern in youtube_patterns:
         match = re.match(pattern, url)
@@ -441,3 +442,10 @@ if __name__ == '__main__':
     print(f"Video ID: {video_id}")
     print(f"aria2: {ARIA2_AVAILABLE}")
     print(f"Min duration: {MIN_DURATION_SECONDS}с")
+    
+    # Тестируем Live URL
+    live_url = "https://www.youtube.com/live/vOMD0i6ZoZA"
+    platform_l, clean_url_l, video_id_l = detect_youtube(live_url)
+    print(f"\nLive URL: {live_url}")
+    print(f"Platform: {platform_l}")
+    print(f"Video ID: {video_id_l}")
