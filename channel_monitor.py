@@ -119,10 +119,22 @@ async def check_channel_rss(channel_id: str) -> List[Dict]:
 
 
 def is_video_in_db(video_id: str) -> bool:
-    """Проверяет, есть ли видео в БД"""
+    """Проверяет, есть ли видео в БД (в таблице videos)"""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('SELECT 1 FROM videos WHERE video_id = ?', (video_id,))
+    exists = cursor.fetchone() is not None
+    conn.close()
+    return exists
+
+
+def is_video_already_downloaded(video_id: str) -> bool:
+    """Проверяет, есть ли видео уже в БД с файлами (т.е. было скачано)"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT 1 FROM video_files WHERE video_id = ?
+    ''', (video_id,))
     exists = cursor.fetchone() is not None
     conn.close()
     return exists
@@ -258,6 +270,11 @@ async def check_all_channels(bot_client=None, send_notifications: bool = True,
                 logger.info(f"📺 {channel_name}: +{len(new_videos)} новых видео")
                 
                 for video in new_videos:
+                    # Проверяем, не скачано ли уже это видео
+                    if is_video_already_downloaded(video['video_id']):
+                        logger.info(f"⏩ Пропущено (уже скачано): {video['title'][:50]}...")
+                        continue
+                    
                     add_new_video_to_db(video)
                     
                     if auto_download and bot_client and storage_chat_id:
@@ -270,20 +287,7 @@ async def check_all_channels(bot_client=None, send_notifications: bool = True,
                             quality='360'
                         )
                     
-                    if bot_client and send_notifications and storage_chat_id:
-                        try:
-                            message = (
-                                f"🆕 **Новое видео!**\n\n"
-                                f"📺 **{video['title'][:100]}**\n"
-                                f"👤 **Канал:** {channel_name}\n"
-                                f"🔗 {video['url']}\n"
-                                f"📅 {video.get('published', '')[:10]}"
-                            )
-                            await bot_client.send_message(storage_chat_id, message)
-                            await asyncio.sleep(0.1)
-                        except:
-                            pass
-                    
+                    # Отправляем уведомления подписчикам (НЕ в storage чат)
                     if notify_callback:
                         try:
                             await notify_callback(channel_id, video['title'], video['url'])
