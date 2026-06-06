@@ -1,4 +1,4 @@
-# downloader.py - Модуль для скачивания видео с YouTube
+# downloader.py - финальная версия
 import os
 import re
 import time
@@ -10,7 +10,6 @@ import requests
 
 from logger_config import create_logger
 
-# Логгер для этого модуля
 logger = create_logger(
     name='Downloader',
     level=20,
@@ -18,20 +17,11 @@ logger = create_logger(
     show_separators=False
 ).get_logger()
 
-# ============================================================
-# КОНФИГУРАЦИЯ
-# ============================================================
 DOWNLOAD_FOLDER = 'downloads'
 COOKIES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
-
-# Минимальная длительность видео для YouTube
-MIN_DURATION_SECONDS = 78  # 1.3 минуты
+MIN_DURATION_SECONDS = 78
 
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
-
-# ============================================================
-# КАЧЕСТВО И ФОРМАТЫ YOUTUBE
-# ============================================================
 
 QUALITY_OPTIONS = {
     '360': {
@@ -78,7 +68,6 @@ QUALITY_OPTIONS = {
 
 
 def check_aria2() -> bool:
-    """Проверяет, установлен ли aria2c"""
     import subprocess
     try:
         result = subprocess.run(['aria2c', '--version'], capture_output=True, timeout=2)
@@ -91,10 +80,6 @@ ARIA2_AVAILABLE = check_aria2()
 
 
 def detect_youtube(url: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    """
-    Определяет, является ли URL ссылкой на YouTube.
-    Возвращает: (platform, clean_url, video_id) или (None, None, None)
-    """
     youtube_patterns = [
         r'(?:https?://)?(?:www\.)?youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})',
         r'(?:https?://)?(?:www\.)?youtu\.be/([a-zA-Z0-9_-]{11})',
@@ -115,7 +100,6 @@ def detect_youtube(url: str) -> Tuple[Optional[str], Optional[str], Optional[str
 
 
 def download_thumbnail_youtube(video_id: str) -> Optional[str]:
-    """Скачивает превью для YouTube"""
     thumb_path = os.path.join(DOWNLOAD_FOLDER, f"thumb_{video_id}.jpg")
     thumb_urls = [
         f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg",
@@ -136,7 +120,6 @@ def download_thumbnail_youtube(video_id: str) -> Optional[str]:
 
 
 def get_video_info(url: str) -> Optional[dict]:
-    """Получает информацию о YouTube видео БЕЗ скачивания."""
     logger.info(f"🔍 Получаю информацию: YouTube")
     
     ydl_opts = {
@@ -147,12 +130,12 @@ def get_video_info(url: str) -> Optional[dict]:
         'cookiefile': COOKIES_FILE if os.path.exists(COOKIES_FILE) else None,
         'extractor_args': {
             'youtube': {
-                'player_client': ['ios', 'android'],
+                'player_client': ['android', 'web'],
                 'player_skip': ['webpage', 'configs'],
             }
         },
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Mobile Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.9',
         }
     }
@@ -160,7 +143,6 @@ def get_video_info(url: str) -> Optional[dict]:
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            
             if not info:
                 return None
             
@@ -187,7 +169,6 @@ def get_video_info(url: str) -> Optional[dict]:
                 'categories': info.get('categories', []),
                 'url': url,
             }
-    
     except Exception as e:
         logger.error(f"Ошибка получения информации: {str(e)[:200]}")
         return None
@@ -195,9 +176,6 @@ def get_video_info(url: str) -> Optional[dict]:
 
 def download_video(url: str, quality: str, 
                    progress_callback=None, cancel_event: threading.Event = None) -> Optional[dict]:
-    """
-    Скачивает YouTube видео с выбранным качеством.
-    """
     if cancel_event and cancel_event.is_set():
         logger.info("🛑 Загрузка отменена")
         return None
@@ -214,7 +192,7 @@ def download_video(url: str, quality: str,
     
     cookies_exists = os.path.exists(COOKIES_FILE)
     
-    # ОБНОВЛЕННАЯ КОНФИГУРАЦИЯ ДЛЯ ОБХОДА БЛОКИРОВОК
+    # ИСПРАВЛЕННАЯ КОНФИГУРАЦИЯ - используем Android клиент
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
@@ -226,17 +204,14 @@ def download_video(url: str, quality: str,
         'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
         'format': format_str,
         'cookiefile': COOKIES_FILE if cookies_exists else None,
-        
-        # КЛЮЧЕВЫЕ НАСТРОЙКИ ДЛЯ ОБХОДА
         'extractor_args': {
             'youtube': {
-                'player_client': ['ios', 'android', 'web'],
+                'player_client': ['android', 'web'],  # <-- ИСПРАВЛЕНО: убрали ios
                 'player_skip': ['webpage', 'configs'],
-                'skip': ['hls', 'dash'],
             }
         },
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Mobile Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.9',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Encoding': 'gzip, deflate, br',
@@ -244,7 +219,6 @@ def download_video(url: str, quality: str,
             'Origin': 'https://www.youtube.com',
             'Referer': 'https://www.youtube.com',
         },
-        # Отключаем aria2c - он часто вызывает проблемы
         'external_downloader': None,
         'concurrent_fragment_downloads': 1,
         'throttledratelimit': 100000000,
@@ -348,7 +322,6 @@ def download_video(url: str, quality: str,
                 'format_id': info.get('format_id', '?'),
             }
             
-            # Проверка минимальной длительности
             if not is_audio and duration < MIN_DURATION_SECONDS:
                 logger.info(f"⏱ Видео слишком короткое ({duration}с < {MIN_DURATION_SECONDS}с). Пропускаем.")
                 try:
@@ -430,5 +403,3 @@ if __name__ == '__main__':
     print(f"URL: {test_url}")
     print(f"Platform: {platform}")
     print(f"Video ID: {video_id}")
-    print(f"aria2: {ARIA2_AVAILABLE}")
-    print(f"Min duration: {MIN_DURATION_SECONDS}с")
