@@ -150,7 +150,7 @@ async def process_download(event, user_id, url, platform, video_id, quality):
             pass
     
     # Проверка кэша (только для YouTube)
-    if platform == 'youtube' and video_id:
+    if platform == 'youtube':
         await update_progress(1, "Проверка кэша", 2, "Ищу в базе данных...")
         await asyncio.sleep(0.5)
         
@@ -172,7 +172,7 @@ async def process_download(event, user_id, url, platform, video_id, quality):
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка пересылки: {e}")
     
-    # Этап 1: Получение информации
+    # Этап 1: Получение информации (имитация)
     stage1_messages = [
         (3, "Подключаюсь к серверу..."),
         (6, "Загружаю страницу видео..."),
@@ -200,7 +200,7 @@ async def process_download(event, user_id, url, platform, video_id, quality):
         
         current_msg = stage1_messages[current_msg_index - 1][1] if current_msg_index > 0 else "Инициализация загрузки..."
         await update_progress(1, "Получение информации", percent, current_msg)
-        await asyncio.sleep(2.0)
+        await asyncio.sleep(5.0)
     
     await update_progress(1, "Информация получена", 30, "Запускаю скачивание...")
     await asyncio.sleep(0.5)
@@ -363,7 +363,7 @@ async def process_download(event, user_id, url, platform, video_id, quality):
                         )],
                         supports_streaming=True)
         
-        # Сохраняем в БД только для YouTube видео
+        # Сохраняем в БД ТОЛЬКО YouTube видео
         if storage_message and video_id and platform == 'youtube':
             save_complete_info_with_storage(
                 video_id=video_id, platform=platform, quality=quality,
@@ -405,11 +405,11 @@ async def start_handler(event):
     user_id = event.sender_id
     try:
         sender = await event.get_sender()
-        user_name = sender.first_name or str(user_id)
+        user_name = sender.first_name or user_id
         add_or_update_user(user_id, username=getattr(sender, 'username', None),
                           first_name=getattr(sender, 'first_name', None))
     except:
-        user_name = str(user_id)
+        user_name = user_id
     
     stats = get_stats()
     
@@ -690,7 +690,7 @@ async def main():
     try:
         entity = await client.get_entity(STORAGE_CHAT)
         storage_chat_id = entity.id
-        logger.info(f"🗄 Хранилище: {STORAGE_CHAT} ✅")
+        logger.info(f"🗄 Хранилище: @copirkaDva ✅")
     except Exception as e:
         logger.error(f"❌ Хранилище недоступно: {e}")
     
