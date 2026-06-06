@@ -81,8 +81,8 @@ def check_aria2() -> bool:
     """Проверяет, установлен ли aria2c"""
     import subprocess
     try:
-        subprocess.run(['aria2c', '--version'], capture_output=True, timeout=2)
-        return True
+        result = subprocess.run(['aria2c', '--version'], capture_output=True, timeout=2)
+        return result.returncode == 0
     except:
         return False
 
@@ -99,7 +99,7 @@ def detect_youtube(url: str) -> Tuple[Optional[str], Optional[str], Optional[str
         r'(?:https?://)?(?:www\.)?youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})',
         r'(?:https?://)?(?:www\.)?youtu\.be/([a-zA-Z0-9_-]{11})',
         r'(?:https?://)?(?:www\.)?youtube\.com/shorts/([a-zA-Z0-9_-]{11})',
-        r'(?:https?://)?(?:www\.)?youtube\.com/live/([a-zA-Z0-9_-]{11})',  # Поддержка YouTube Live
+        r'(?:https?://)?(?:www\.)?youtube\.com/live/([a-zA-Z0-9_-]{11})',
     ]
     for pattern in youtube_patterns:
         match = re.match(pattern, url)
@@ -107,7 +107,6 @@ def detect_youtube(url: str) -> Tuple[Optional[str], Optional[str], Optional[str
             video_id = match.group(1)
             return 'youtube', f"https://www.youtube.com/watch?v={video_id}", video_id
     
-    # YouTube ID (только 11 символов)
     if re.match(r'^[a-zA-Z0-9_-]{11}$', url.strip()):
         video_id = url.strip()
         return 'youtube', f"https://www.youtube.com/watch?v={video_id}", video_id
@@ -196,15 +195,6 @@ def download_video(url: str, quality: str,
                    progress_callback=None, cancel_event: threading.Event = None) -> Optional[dict]:
     """
     Скачивает YouTube видео с выбранным качеством.
-    
-    Args:
-        url: ссылка на видео
-        quality: '360', '480', '720', '1080', 'mp3'
-        progress_callback: функция для прогресса (percent, speed, eta)
-        cancel_event: threading.Event для отмены
-    
-    Returns:
-        dict с информацией о скачанном видео или None
     """
     if cancel_event and cancel_event.is_set():
         logger.info("🛑 Загрузка отменена")
@@ -222,43 +212,32 @@ def download_video(url: str, quality: str,
     
     cookies_exists = os.path.exists(COOKIES_FILE)
     
+    # Базовые опции без aria2c (более стабильно)
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
         'socket_timeout': 30,
-        'retries': 5,
-        'fragment_retries': 5,
+        'retries': 10,
+        'fragment_retries': 10,
         'skip_unavailable_fragments': True,
         'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
         'format': format_str,
         'cookiefile': COOKIES_FILE if cookies_exists else None,
         'extractor_args': {'youtube': {'player_client': 'android,web', 'player_skip': []}},
-        'remote_components': ['ejs:github'],
         'youtube_include_hls_manifest': False,
         'youtube_include_dash_manifest': True,
         'format_sort': ['res:1080', 'ext:mp4:m4a'],
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8',
-        }
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+        },
+        # ВАЖНО: используем встроенный загрузчик вместо aria2c для аудио
+        'concurrent_fragment_downloads': 1,
+        'throttledratelimit': 100000000,  # 100 MB/s лимит для предотвращения блокировки
     }
-    
-    if ARIA2_AVAILABLE:
-        ydl_opts.update({
-            'external_downloader': 'aria2c',
-            'external_downloader_args': [
-                '-x', '16', '-s', '16', '-k', '1M',
-                '--max-connection-per-server=16', '--min-split-size=1M',
-                '--file-allocation=none', '--async-dns=true',
-                '--max-tries=5', '--retry-wait=1',
-            ],
-        })
-    else:
-        ydl_opts.update({
-            'concurrent_fragment_downloads': 16,
-            'buffersize': 2 * 1024 * 1024,
-            'http_chunk_size': 20 * 1024 * 1024,
-        })
     
     if is_audio:
         ydl_opts['postprocessors'] = [{
@@ -267,9 +246,24 @@ def download_video(url: str, quality: str,
             'preferredquality': '192',
         }]
         ydl_opts['merge_output_format'] = None
+        # Для аудио НЕ используем aria2c (вызывает 403 ошибку)
+        ydl_opts['external_downloader'] = None
     else:
         ydl_opts['merge_output_format'] = 'mp4'
         ydl_opts['postprocessor_args'] = ['-c', 'copy', '-movflags', '+faststart']
+        # Для видео можно использовать aria2c
+        if ARIA2_AVAILABLE:
+            ydl_opts['external_downloader'] = 'aria2c'
+            ydl_opts['external_downloader_args'] = [
+                '-x', '4', '-s', '4', '-k', '1M',  # Уменьшил потоки
+                '--max-connection-per-server=4',
+                '--min-split-size=1M',
+                '--file-allocation=none',
+                '--async-dns=true',
+                '--max-tries=3',
+                '--retry-wait=1',
+                '--console-log-level=error',  # Меньше логов
+            ]
     
     ydl_opts['prefer_ffmpeg'] = True
     
@@ -442,10 +436,3 @@ if __name__ == '__main__':
     print(f"Video ID: {video_id}")
     print(f"aria2: {ARIA2_AVAILABLE}")
     print(f"Min duration: {MIN_DURATION_SECONDS}с")
-    
-    # Тестируем Live URL
-    live_url = "https://www.youtube.com/live/vOMD0i6ZoZA"
-    platform_l, clean_url_l, video_id_l = detect_youtube(live_url)
-    print(f"\nLive URL: {live_url}")
-    print(f"Platform: {platform_l}")
-    print(f"Video ID: {video_id_l}")
