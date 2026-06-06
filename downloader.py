@@ -1,4 +1,4 @@
-# downloader.py - ФИНАЛЬНАЯ ВЕРСИЯ с fix для event loop
+# downloader.py - ФИНАЛЬНАЯ ВЕРСИЯ (работает в боте)
 import os
 import re
 import time
@@ -25,7 +25,6 @@ MIN_DURATION_SECONDS = 78
 
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 
-# Всегда используем формат 18 (360p) - работает везде
 QUALITY_OPTIONS = {
     '360': {
         'format': '18',
@@ -111,7 +110,6 @@ def download_thumbnail_youtube(video_id: str) -> Optional[str]:
 
 
 def get_video_info(url: str) -> Optional[dict]:
-    """Получает информацию о YouTube видео БЕЗ скачивания."""
     logger.info(f"🔍 Получаю информацию: YouTube")
     
     time.sleep(random.uniform(1, 2))
@@ -160,22 +158,19 @@ def get_video_info(url: str) -> Optional[dict]:
         return None
 
 
-def download_video_sync(url: str, quality: str, 
-                        progress_callback=None, 
-                        cancel_event: threading.Event = None) -> Optional[dict]:
+async def download_video(url: str, quality: str, 
+                         progress_callback=None, 
+                         cancel_event: threading.Event = None) -> Optional[dict]:
     """
-    СИНХРОННАЯ версия скачивания (для запуска в отдельном потоке)
+    Асинхронная версия для вызова из бота.
+    Запускает синхронную загрузку в отдельном потоке.
     """
     if cancel_event and cancel_event.is_set():
         logger.info("🛑 Загрузка отменена")
         return None
     
-    # Всегда используем 360p для скачивания
     requested_quality_config = QUALITY_OPTIONS.get(quality, QUALITY_OPTIONS['360'])
     is_audio = requested_quality_config['audio_only']
-    
-    # Фактически используем формат 18 (360p)
-    actual_format = '18'
     
     logger.info(f"⬇️ Скачиваю YouTube: {requested_quality_config['description']}")
     
@@ -183,34 +178,42 @@ def download_video_sync(url: str, quality: str,
         return None
     
     start_time = time.time()
-    cookies_exists = os.path.exists(COOKIES_FILE)
     
-    # Задержка перед скачиванием
-    delay = random.uniform(1, 2)
-    logger.info(f"⏳ Пауза {delay:.1f} сек...")
-    time.sleep(delay)
+    # Создаём очередь для прогресса
+    progress_queue = asyncio.Queue()
     
-    # Простые настройки
-    ydl_opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'socket_timeout': 30,
-        'retries': 10,
-        'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
-        'format': actual_format,
-        'cookiefile': COOKIES_FILE if cookies_exists else None,
-    }
-    
-    if is_audio:
-        ydl_opts['postprocessors'] = [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }]
-        ydl_opts['keepvideo'] = False
-    
-    try:
+    # Функция для синхронного скачивания
+    def sync_download():
+        nonlocal start_time
+        cookies_exists = os.path.exists(COOKIES_FILE)
+        
+        # Задержка перед скачиванием
+        delay = random.uniform(1, 2)
+        logger.info(f"⏳ Пауза {delay:.1f} сек...")
+        time.sleep(delay)
+        
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 30,
+            'retries': 10,
+            'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
+            'format': '18',  # Всегда 360p
+            'cookiefile': COOKIES_FILE if cookies_exists else None,
+        }
+        
+        if is_audio:
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }]
+            ydl_opts['keepvideo'] = False
+        
+        last_percent = 0
+        
         def progress_hook(d):
+            nonlocal last_percent
             if d['status'] == 'downloading':
                 try:
                     percent_str = d.get('_percent_str', '0%').strip().replace('%', '')
@@ -219,11 +222,12 @@ def download_video_sync(url: str, quality: str,
                     if cancel_event and cancel_event.is_set():
                         raise Exception("DOWNLOAD_CANCELLED")
                     
-                    if progress_callback:
-                        progress_callback(
-                            percent=percent,
-                            speed=d.get('_speed_str', ''),
-                            eta=d.get('_eta_str', ''),
+                    if int(percent) > last_percent and progress_callback:
+                        last_percent = int(percent)
+                        # Отправляем прогресс через очередь
+                        asyncio.run_coroutine_threadsafe(
+                            progress_queue.put((percent, d.get('_speed_str', ''), d.get('_eta_str', ''))),
+                            loop
                         )
                 except Exception as e:
                     if str(e) == "DOWNLOAD_CANCELLED":
@@ -231,10 +235,9 @@ def download_video_sync(url: str, quality: str,
                     pass
             elif d['status'] == 'finished' and is_audio:
                 if progress_callback:
-                    progress_callback(
-                        percent=95,
-                        speed='',
-                        eta='Конвертация в MP3...',
+                    asyncio.run_coroutine_threadsafe(
+                        progress_queue.put((95, '', 'Конвертация в MP3...')),
+                        loop
                     )
         
         ydl_opts['progress_hooks'] = [progress_hook]
@@ -272,7 +275,6 @@ def download_video_sync(url: str, quality: str,
                         return None
             
             file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-            
             duration = info.get('duration', 0)
             if duration:
                 duration = int(duration)
@@ -299,7 +301,7 @@ def download_video_sync(url: str, quality: str,
                 'url': url,
                 'width': 0 if is_audio else 640,
                 'height': 0 if is_audio else 360,
-                'format_id': info.get('format_id', actual_format),
+                'format_id': info.get('format_id', '18'),
             }
             
             if not is_audio and duration < MIN_DURATION_SECONDS:
@@ -360,37 +362,45 @@ def download_video_sync(url: str, quality: str,
                 'too_short': False,
             }
     
+    # Запускаем синхронную загрузку в потоке
+    loop = asyncio.get_running_loop()
+    
+    # Задача для обработки прогресса
+    async def handle_progress():
+        while True:
+            try:
+                percent, speed, eta = await asyncio.wait_for(progress_queue.get(), timeout=0.5)
+                if progress_callback:
+                    await asyncio.get_running_loop().run_in_executor(
+                        None, progress_callback, percent, speed, eta
+                    )
+            except asyncio.TimeoutError:
+                if cancel_event and cancel_event.is_set():
+                    break
+                continue
+            except Exception as e:
+                break
+    
+    # Запускаем обе задачи
+    progress_task = asyncio.create_task(handle_progress())
+    download_task = loop.run_in_executor(None, sync_download)
+    
+    try:
+        result = await download_task
+        progress_task.cancel()
+        return result
     except Exception as e:
-        if str(e) == "DOWNLOAD_CANCELLED" or (cancel_event and cancel_event.is_set()):
+        progress_task.cancel()
+        if "DOWNLOAD_CANCELLED" in str(e) or (cancel_event and cancel_event.is_set()):
             logger.info("🛑 Загрузка отменена")
             return None
-        logger.error(f"Ошибка скачивания YouTube: {str(e)[:200]}")
         raise
 
 
-# Асинхронная обёртка (для совместимости с существующим event loop)
-async def download_video(url: str, quality: str, 
-                         progress_callback=None, 
-                         cancel_event: threading.Event = None) -> Optional[dict]:
-    """
-    Асинхронная обёртка для вызова в боте
-    """
-    loop = asyncio.get_running_loop()
-    
-    def run_sync():
-        return download_video_sync(url, quality, progress_callback, cancel_event)
-    
-    return await loop.run_in_executor(None, run_sync)
-
-
 if __name__ == '__main__':
-    test_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-    platform, clean_url, video_id = detect_youtube(test_url)
-    print(f"URL: {test_url}")
-    print(f"Platform: {platform}")
-    print(f"Video ID: {video_id}")
+    async def test():
+        result = await download_video("https://www.youtube.com/watch?v=dQw4w9WgXcQ", 'mp3')
+        if result:
+            print(f"✅ Тест пройден: {result['title'][:50]}")
     
-    # Тест синхронной версии
-    result = download_video_sync(test_url, '360')
-    if result:
-        print(f"✅ Тест пройден: {result['title'][:50]}")
+    asyncio.run(test())
