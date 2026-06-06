@@ -816,4 +816,23 @@ async def main():
     print(f"  🤖 БОТ: @{me.username}")
     print(f"  📺 YouTube: 360p | 480p | 720p | 1080p | MP3")
     print(f"  🎵 TikTok: Видео со звуком | MP3")
-    print(f"  🔴
+    print(f"  🔴 Поддержка YouTube Live")
+    print(f"  ✅ - качество в кэше")
+    print(f"  💾 БД: {stats['total_videos']} видео | 👥 {stats['total_users']} пользователей")
+    print("=" * 60)
+    print()
+    
+    await client.run_until_disconnected()
+
+
+if __name__ == '__main__':
+    try:
+        import yt_dlp
+        import telethon
+        import requests
+        import sqlite3
+    except ImportError as e:
+        print(f"❌ Установите зависимости: pip install yt-dlp telethon requests")
+        exit(1)
+    
+    client.loop.run_until_complete(main())
