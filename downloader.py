@@ -1,4 +1,4 @@
-# downloader.py - УПРОЩЕННАЯ ВЕРСИЯ для бота
+# downloader.py - УПРОЩЕННАЯ ВЕРСИЯ с надежным MP3
 import os
 import re
 import time
@@ -25,7 +25,7 @@ os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 
 QUALITY_OPTIONS = {
     '360': {
-        'format': '18',  # Самый простой формат - 360p mp4
+        'format': '18',
         'label': '📺 360p',
         'quality_label': '360p',
         'resolution': (640, 360),
@@ -33,7 +33,7 @@ QUALITY_OPTIONS = {
         'audio_only': False,
     },
     '480': {
-        'format': '18',  # 18 - это 360p, но работает стабильно
+        'format': '18',
         'label': '📺 480p',
         'quality_label': '480p',
         'resolution': (854, 480),
@@ -41,7 +41,7 @@ QUALITY_OPTIONS = {
         'audio_only': False,
     },
     '720': {
-        'format': '22',  # 22 - 720p mp4
+        'format': '22',
         'label': '📺 720p HD',
         'quality_label': '720p HD',
         'resolution': (1280, 720),
@@ -49,7 +49,7 @@ QUALITY_OPTIONS = {
         'audio_only': False,
     },
     '1080': {
-        'format': '22',  # 22 - 720p, 1080p требует токен
+        'format': '22',
         'label': '📺 1080p Full HD',
         'quality_label': '1080p Full HD',
         'resolution': (1920, 1080),
@@ -57,7 +57,7 @@ QUALITY_OPTIONS = {
         'audio_only': False,
     },
     'mp3': {
-        'format': '140',  # 140 - m4a audio
+        'format': '18',  # Скачиваем видео 360p, потом извлекаем аудио
         'label': '🎵 MP3',
         'quality_label': 'MP3',
         'resolution': None,
@@ -111,7 +111,6 @@ def get_video_info(url: str) -> Optional[dict]:
     """Получает информацию о YouTube видео БЕЗ скачивания."""
     logger.info(f"🔍 Получаю информацию: YouTube")
     
-    # МАКСИМАЛЬНО ПРОСТЫЕ НАСТРОЙКИ - как в тестовом скрипте
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
@@ -160,25 +159,26 @@ def download_video(url: str, quality: str,
                    progress_callback=None, 
                    cancel_event: threading.Event = None) -> Optional[dict]:
     """
-    Скачивает YouTube видео - МАКСИМАЛЬНО УПРОЩЕННАЯ ВЕРСИЯ
+    Скачивает YouTube видео.
+    Для MP3: скачивает видео 360p и извлекает аудио
     """
     if cancel_event and cancel_event.is_set():
         logger.info("🛑 Загрузка отменена")
         return None
     
     quality_config = QUALITY_OPTIONS.get(quality, QUALITY_OPTIONS['360'])
+    is_audio = quality_config['audio_only']
+    format_id = quality_config['format']
+    
     logger.info(f"⬇️ Скачиваю YouTube: {quality_config['description']}")
     
     if cancel_event and cancel_event.is_set():
         return None
     
     start_time = time.time()
-    is_audio = quality_config['audio_only']
-    format_id = quality_config['format']
-    
     cookies_exists = os.path.exists(COOKIES_FILE)
     
-    # МАКСИМАЛЬНО ПРОСТЫЕ НАСТРОЙКИ - КАК В ТЕСТОВОМ СКРИПТЕ
+    # Базовые настройки для скачивания
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
@@ -189,18 +189,20 @@ def download_video(url: str, quality: str,
         'cookiefile': COOKIES_FILE if cookies_exists else None,
     }
     
+    # Для MP3 добавляем постпроцессор извлечения аудио
     if is_audio:
         ydl_opts['postprocessors'] = [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
             'preferredquality': '192',
         }]
+        # yt-dlp сам удалит исходное видео после извлечения аудио
+        ydl_opts['keepvideo'] = False
     
     try:
         def progress_hook(d):
             if d['status'] == 'downloading':
                 try:
-                    # Извлекаем процент из строки вида " 45.2% of 11.28MiB"
                     percent_str = d.get('_percent_str', '0%').strip().replace('%', '')
                     percent = float(percent_str) if percent_str else 0
                     
@@ -217,6 +219,14 @@ def download_video(url: str, quality: str,
                     if str(e) == "DOWNLOAD_CANCELLED":
                         raise
                     pass
+            elif d['status'] == 'finished' and is_audio:
+                # Уведомляем о конвертации в MP3
+                if progress_callback:
+                    progress_callback(
+                        percent=95,
+                        speed='',
+                        eta='Конвертация в MP3...',
+                    )
         
         ydl_opts['progress_hooks'] = [progress_hook]
         
@@ -228,20 +238,24 @@ def download_video(url: str, quality: str,
             
             total_time = time.time() - start_time
             
-            # Находим файл
-            file_path = ydl.prepare_filename(info)
+            # Определяем путь к файлу
             if is_audio:
-                file_path = os.path.splitext(file_path)[0] + '.mp3'
+                # Для MP3: yt-dlp сам создаст .mp3 файл
+                base_path = ydl.prepare_filename(info)
+                file_path = os.path.splitext(base_path)[0] + '.mp3'
+            else:
+                file_path = ydl.prepare_filename(info)
             
+            # Если файл не найден, ищем альтернативы
             if not os.path.exists(file_path):
-                # Ищем файл с расширением
-                for ext in ['.mp4', '.webm', '.mkv']:
-                    alt_path = os.path.splitext(file_path)[0] + ext
+                base = os.path.splitext(file_path)[0]
+                search_exts = ['.mp3'] if is_audio else ['.mp4', '.webm', '.mkv']
+                for ext in search_exts:
+                    alt_path = base + ext
                     if os.path.exists(alt_path):
                         file_path = alt_path
                         break
                 else:
-                    # Ищем по ID
                     video_id = info.get('id', '')
                     import glob
                     possible = glob.glob(f"{DOWNLOAD_FOLDER}/*{video_id}*")
@@ -257,6 +271,7 @@ def download_video(url: str, quality: str,
             if duration:
                 duration = int(duration)
             
+            # Формируем информацию для возврата
             full_info = {
                 'title': info.get('title', 'Видео'),
                 'fulltitle': info.get('fulltitle', info.get('title', 'Видео')),
@@ -275,12 +290,12 @@ def download_video(url: str, quality: str,
                 'tags': info.get('tags', []),
                 'categories': info.get('categories', []),
                 'url': url,
-                'width': 640,
-                'height': 360,
+                'width': 0 if is_audio else 640,
+                'height': 0 if is_audio else 360,
                 'format_id': info.get('format_id', format_id),
             }
             
-            # Проверка минимальной длительности
+            # Проверка минимальной длительности (только для видео, не для аудио)
             if not is_audio and duration < MIN_DURATION_SECONDS:
                 logger.info(f"⏱ Видео слишком короткое ({duration}с < {MIN_DURATION_SECONDS}с). Пропускаем.")
                 try:
@@ -311,20 +326,12 @@ def download_video(url: str, quality: str,
                     'too_short': True,
                 }
             
-            if not is_audio:
-                width = quality_config['resolution'][0]
-                height = quality_config['resolution'][1]
-            else:
-                width, height = 0, 0
-            
-            full_info['width'] = width
-            full_info['height'] = height
-            
+            # Скачиваем превью (только для видео)
             thumb_path = None
             if not is_audio:
                 thumb_path = download_thumbnail_youtube(info.get('id', ''))
             
-            logger.info(f"✅ YouTube скачан: {os.path.basename(file_path)} | {file_size_mb:.1f} MB | {total_time:.1f}с")
+            logger.info(f"✅ {'MP3' if is_audio else 'YouTube'} скачан: {os.path.basename(file_path)} | {file_size_mb:.1f} MB | {total_time:.1f}с")
             
             return {
                 'title': full_info['title'],
@@ -339,8 +346,8 @@ def download_video(url: str, quality: str,
                 'quality': quality_config['description'],
                 'quality_code': quality,
                 'is_audio': is_audio,
-                'width': width,
-                'height': height,
+                'width': full_info['width'],
+                'height': full_info['height'],
                 'thumb_path': thumb_path,
                 'view_count': full_info['view_count'],
                 'like_count': full_info['like_count'],
