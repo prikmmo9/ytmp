@@ -1,8 +1,9 @@
-# downloader.py - УПРОЩЕННАЯ ВЕРСИЯ с надежным MP3
+# downloader.py - ДОБАВЛЯЕМ ЗАДЕРЖКИ ПЕРЕД КАЖДЫМ ЗАПРОСОМ
 import os
 import re
 import time
 import threading
+import random
 from typing import Optional, Tuple
 
 import yt_dlp
@@ -57,7 +58,7 @@ QUALITY_OPTIONS = {
         'audio_only': False,
     },
     'mp3': {
-        'format': '18',  # Скачиваем видео 360p, потом извлекаем аудио
+        'format': '18',
         'label': '🎵 MP3',
         'quality_label': 'MP3',
         'resolution': None,
@@ -110,6 +111,9 @@ def download_thumbnail_youtube(video_id: str) -> Optional[str]:
 def get_video_info(url: str) -> Optional[dict]:
     """Получает информацию о YouTube видео БЕЗ скачивания."""
     logger.info(f"🔍 Получаю информацию: YouTube")
+    
+    # Задержка перед запросом (имитация человека)
+    time.sleep(random.uniform(1, 2))
     
     ydl_opts = {
         'quiet': True,
@@ -178,6 +182,11 @@ def download_video(url: str, quality: str,
     start_time = time.time()
     cookies_exists = os.path.exists(COOKIES_FILE)
     
+    # ⚠️ КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: задержка перед скачиванием (имитация человека)
+    delay = random.uniform(2, 4)
+    logger.info(f"⏳ Пауза {delay:.1f} сек перед скачиванием...")
+    time.sleep(delay)
+    
     # Базовые настройки для скачивания
     ydl_opts = {
         'quiet': True,
@@ -196,7 +205,6 @@ def download_video(url: str, quality: str,
             'preferredcodec': 'mp3',
             'preferredquality': '192',
         }]
-        # yt-dlp сам удалит исходное видео после извлечения аудио
         ydl_opts['keepvideo'] = False
     
     try:
@@ -220,7 +228,6 @@ def download_video(url: str, quality: str,
                         raise
                     pass
             elif d['status'] == 'finished' and is_audio:
-                # Уведомляем о конвертации в MP3
                 if progress_callback:
                     progress_callback(
                         percent=95,
@@ -240,7 +247,6 @@ def download_video(url: str, quality: str,
             
             # Определяем путь к файлу
             if is_audio:
-                # Для MP3: yt-dlp сам создаст .mp3 файл
                 base_path = ydl.prepare_filename(info)
                 file_path = os.path.splitext(base_path)[0] + '.mp3'
             else:
@@ -271,7 +277,6 @@ def download_video(url: str, quality: str,
             if duration:
                 duration = int(duration)
             
-            # Формируем информацию для возврата
             full_info = {
                 'title': info.get('title', 'Видео'),
                 'fulltitle': info.get('fulltitle', info.get('title', 'Видео')),
@@ -295,7 +300,7 @@ def download_video(url: str, quality: str,
                 'format_id': info.get('format_id', format_id),
             }
             
-            # Проверка минимальной длительности (только для видео, не для аудио)
+            # Проверка минимальной длительности (только для видео)
             if not is_audio and duration < MIN_DURATION_SECONDS:
                 logger.info(f"⏱ Видео слишком короткое ({duration}с < {MIN_DURATION_SECONDS}с). Пропускаем.")
                 try:
