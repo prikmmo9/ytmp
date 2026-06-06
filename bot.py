@@ -815,4 +815,5 @@ async def main():
     print("=" * 60)
     print(f"  🤖 БОТ: @{me.username}")
     print(f"  📺 YouTube: 360p | 480p | 720p | 1080p | MP3")
-    print(f" 
+    print(f"  🎵 TikTok: Видео со звуком | MP3")
+    print(f"  🔴
