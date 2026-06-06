@@ -145,13 +145,15 @@ def get_video_info(url: str) -> Optional[dict]:
         'socket_timeout': 30,
         'skip_download': True,
         'cookiefile': COOKIES_FILE if os.path.exists(COOKIES_FILE) else None,
-        'extractor_args': {'youtube': {'player_client': 'android', 'player_skip': ['web', 'web_safari']}},
-        'remote_components': ['ejs:github'],
-        'youtube_include_hls_manifest': False,
-        'youtube_include_dash_manifest': True,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['ios', 'android'],
+                'player_skip': ['webpage', 'configs'],
+            }
+        },
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8',
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+            'Accept-Language': 'en-US,en;q=0.9',
         }
     }
     
@@ -212,31 +214,40 @@ def download_video(url: str, quality: str,
     
     cookies_exists = os.path.exists(COOKIES_FILE)
     
-    # Базовые опции без aria2c (более стабильно)
+    # ОБНОВЛЕННАЯ КОНФИГУРАЦИЯ ДЛЯ ОБХОДА БЛОКИРОВОК
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
+        'extract_flat': False,
         'socket_timeout': 30,
-        'retries': 10,
-        'fragment_retries': 10,
+        'retries': 15,
+        'fragment_retries': 15,
         'skip_unavailable_fragments': True,
         'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
         'format': format_str,
         'cookiefile': COOKIES_FILE if cookies_exists else None,
-        'extractor_args': {'youtube': {'player_client': 'android,web', 'player_skip': []}},
-        'youtube_include_hls_manifest': False,
-        'youtube_include_dash_manifest': True,
-        'format_sort': ['res:1080', 'ext:mp4:m4a'],
+        
+        # КЛЮЧЕВЫЕ НАСТРОЙКИ ДЛЯ ОБХОДА
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['ios', 'android', 'web'],
+                'player_skip': ['webpage', 'configs'],
+                'skip': ['hls', 'dash'],
+            }
+        },
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8',
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+            'Accept-Language': 'en-US,en;q=0.9',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Origin': 'https://www.youtube.com',
+            'Referer': 'https://www.youtube.com',
         },
-        # ВАЖНО: используем встроенный загрузчик вместо aria2c для аудио
+        # Отключаем aria2c - он часто вызывает проблемы
+        'external_downloader': None,
         'concurrent_fragment_downloads': 1,
-        'throttledratelimit': 100000000,  # 100 MB/s лимит для предотвращения блокировки
+        'throttledratelimit': 100000000,
     }
     
     if is_audio:
@@ -246,24 +257,9 @@ def download_video(url: str, quality: str,
             'preferredquality': '192',
         }]
         ydl_opts['merge_output_format'] = None
-        # Для аудио НЕ используем aria2c (вызывает 403 ошибку)
-        ydl_opts['external_downloader'] = None
     else:
         ydl_opts['merge_output_format'] = 'mp4'
         ydl_opts['postprocessor_args'] = ['-c', 'copy', '-movflags', '+faststart']
-        # Для видео можно использовать aria2c
-        if ARIA2_AVAILABLE:
-            ydl_opts['external_downloader'] = 'aria2c'
-            ydl_opts['external_downloader_args'] = [
-                '-x', '4', '-s', '4', '-k', '1M',  # Уменьшил потоки
-                '--max-connection-per-server=4',
-                '--min-split-size=1M',
-                '--file-allocation=none',
-                '--async-dns=true',
-                '--max-tries=3',
-                '--retry-wait=1',
-                '--console-log-level=error',  # Меньше логов
-            ]
     
     ydl_opts['prefer_ffmpeg'] = True
     
