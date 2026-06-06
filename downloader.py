@@ -1,4 +1,4 @@
-# downloader.py - Модуль для скачивания видео с YouTube (с Firefox cookies)
+# downloader.py - Исправленная версия с поддержкой cookies.txt
 import os
 import re
 import time
@@ -21,16 +21,19 @@ logger = create_logger(
 # КОНФИГУРАЦИЯ
 # ============================================================
 DOWNLOAD_FOLDER = 'downloads'
-
-# Настройка cookies для Firefox
-COOKIES_FROM_BROWSER = 'firefox'  # Используем cookies из Firefox
-# Если Firefox установлен в нестандартном месте, укажите путь:
-# COOKIES_FROM_BROWSER = ('firefox', '/path/to/firefox/profile', None)
+COOKIES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
 
 # Минимальная длительность видео для YouTube
 MIN_DURATION_SECONDS = 78  # 1.3 минуты
 
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
+
+# Проверяем наличие cookies
+cookies_exists = os.path.exists(COOKIES_FILE)
+if cookies_exists:
+    logger.info(f"🍪 Cookies загружены из {COOKIES_FILE}")
+else:
+    logger.warning("⚠️ Cookies не найдены! Возможны проблемы с загрузкой")
 
 # ============================================================
 # КАЧЕСТВО И ФОРМАТЫ YOUTUBE
@@ -148,7 +151,7 @@ def get_video_info(url: str) -> Optional[dict]:
         'no_warnings': True,
         'socket_timeout': 30,
         'skip_download': True,
-        'cookiesfrombrowser': (COOKIES_FROM_BROWSER, None, None),  # Берем cookies из Firefox
+        'cookiefile': COOKIES_FILE if cookies_exists else None,
         'extractor_args': {'youtube': {'player_client': 'android,web', 'player_skip': ['web_safari']}},
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -198,7 +201,7 @@ def download_video(url: str, quality: str,
                    progress_callback=None, cancel_event: threading.Event = None) -> Optional[dict]:
     """
     Скачивает YouTube видео с выбранным качеством.
-    Использует cookies из Firefox для обхода блокировок.
+    Использует cookies.txt для аутентификации.
     """
     if cancel_event and cancel_event.is_set():
         logger.info("🛑 Загрузка отменена")
@@ -214,7 +217,7 @@ def download_video(url: str, quality: str,
     is_audio = quality_config['audio_only']
     format_str = quality_config['format']
     
-    # Базовые опции с cookies из Firefox
+    # Базовые опции с cookies.txt
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
@@ -224,7 +227,7 @@ def download_video(url: str, quality: str,
         'skip_unavailable_fragments': True,
         'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
         'format': format_str,
-        'cookiesfrombrowser': (COOKIES_FROM_BROWSER, None, None),  # Cookies из Firefox
+        'cookiefile': COOKIES_FILE if cookies_exists else None,
         'extractor_args': {'youtube': {'player_client': 'android,web', 'player_skip': []}},
         'format_sort': ['res:1080', 'ext:mp4:m4a'],
         'http_headers': {
@@ -435,5 +438,5 @@ if __name__ == '__main__':
     print(f"Platform: {platform}")
     print(f"Video ID: {video_id}")
     print(f"aria2: {ARIA2_AVAILABLE}")
-    print(f"Cookies from: {COOKIES_FROM_BROWSER}")
+    print(f"Cookies file: {COOKIES_FILE} ({'exists' if cookies_exists else 'not found'})")
     print(f"Min duration: {MIN_DURATION_SECONDS}с")
