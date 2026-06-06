@@ -407,11 +407,11 @@ async def start_handler(event):
     user_id = event.sender_id
     try:
         sender = await event.get_sender()
-        user_name = sender.first_name or user_id
+        user_name = sender.first_name or str(user_id)
         add_or_update_user(user_id, username=getattr(sender, 'username', None),
                           first_name=getattr(sender, 'first_name', None))
     except:
-        user_name = user_id
+        user_name = str(user_id)
     
     stats = get_stats()
     
@@ -477,7 +477,7 @@ async def subscribe_handler(event):
     user_id = event.sender_id
     args = event.text.split()
     if len(args) < 2:
-        await event.reply("📋 Использование: `/subscribe UC_channel_id`")
+        await event.reply("📋 Использование: `/subscribe UC_channel_id`\n\nПолучить ID канала можно через /channels")
         return
     
     channel_id = args[1]
@@ -505,7 +505,7 @@ async def mysubs_handler(event):
     user_id = event.sender_id
     subs = get_user_subscriptions(user_id)
     if not subs:
-        await event.reply("📭 **У вас нет подписок**")
+        await event.reply("📭 **У вас нет подписок**\nИспользуйте /subscribe для подписки на канал")
         return
     
     text = f"📋 **Ваши подписки ({len(subs)}):**\n\n"
@@ -529,7 +529,7 @@ async def database_handler(event):
 @client.on(events.NewMessage(pattern='/cancel'))
 async def cancel_handler(event):
     user_id = event.sender_id
-    if user_id in user_downloads:
+    if user_id in user_downloads and user_downloads[user_id].is_set() == False:
         user_downloads[user_id].set()
         await event.reply("🛑 **Загрузка отменена**")
     else:
@@ -547,11 +547,11 @@ async def callback_handler(event):
     quality = data.split(':')[1]
     
     if user_id not in user_selections:
-        await event.answer("❌ Сессия истекла", alert=True)
+        await event.answer("❌ Сессия истекла. Отправьте ссылку заново", alert=True)
         return
     
     if user_id in user_downloads and not user_downloads[user_id].is_set():
-        await event.answer("⚠️ У вас уже есть активная загрузка!", alert=True)
+        await event.answer("⚠️ У вас уже есть активная загрузка! Дождитесь завершения", alert=True)
         return
     
     selection = user_selections[user_id]
@@ -692,18 +692,22 @@ async def main():
     try:
         entity = await client.get_entity(STORAGE_CHAT)
         storage_chat_id = entity.id
-        logger.info(f"🗄 Хранилище: @copirkaDva ✅")
+        logger.info(f"🗄 Хранилище: {STORAGE_CHAT} ✅")
     except Exception as e:
         logger.error(f"❌ Хранилище недоступно: {e}")
+        logger.warning("⚠️ Бот будет работать без сохранения в хранилище")
     
     if ENABLE_MONITORING:
         channels = get_monitored_channels()
         if channels:
+            logger.info(f"📡 Запуск мониторинга {len(channels)} каналов...")
             asyncio.create_task(monitor_loop(
                 bot_client=client,
                 interval_minutes=MONITOR_INTERVAL_MINUTES,
                 notify_callback=notify_subscribers
             ))
+        else:
+            logger.warning("⚠️ Нет каналов для мониторинга")
     
     logger.info(f"✅ Бот запущен: @{me.username}")
     
@@ -728,7 +732,7 @@ if __name__ == '__main__':
         import requests
         import sqlite3
     except ImportError as e:
-        print(f"❌ Установите: pip install yt-dlp telethon requests")
+        print(f"❌ Установите зависимости: pip install yt-dlp telethon requests")
         exit(1)
     
     client.loop.run_until_complete(main())
