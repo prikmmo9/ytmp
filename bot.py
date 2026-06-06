@@ -3,6 +3,8 @@ import os
 import asyncio
 import logging
 import threading
+import random
+import time
 from datetime import datetime
 from asyncio import Semaphore
 
@@ -219,13 +221,15 @@ async def process_download(event, user_id, url, platform, video_id, quality):
             asyncio.create_task(update_progress(2, "Скачивание", mapped_percent, extra, speed, eta))
         
         if platform == 'tiktok':
-            download_func = download_tiktok_video
-            download_args = (url, quality, download_progress_callback, cancel_event)
+            # TikTok использует синхронную функцию
+            def tiktok_download_wrapper():
+                return download_tiktok_video(url, quality, download_progress_callback, cancel_event)
+            download_task = loop.run_in_executor(None, tiktok_download_wrapper)
         else:
-            download_func = download_video
-            download_args = (url, quality, download_progress_callback, cancel_event)
-        
-        download_task = loop.run_in_executor(None, download_func, *download_args)
+            # YouTube - напрямую вызываем асинхронную функцию
+            download_task = asyncio.create_task(
+                download_video(url, quality, download_progress_callback, cancel_event)
+            )
         
         try:
             video_info = await asyncio.wait_for(download_task, timeout=DOWNLOAD_TIMEOUT)
@@ -383,14 +387,21 @@ async def process_download(event, user_id, url, platform, video_id, quality):
     except Exception as e:
         if not cancel_event.is_set():
             error_msg = str(e)
-            if "Failed to extract any player response" in error_msg:
+            if "Sign in to confirm" in error_msg:
                 await event.edit(
-                    f"❌ **Ошибка YouTube API**\n\n"
-                    f"YouTube временно блокирует запросы.\n"
+                    f"❌ **Ошибка аутентификации YouTube**\n\n"
+                    f"YouTube требует подтверждение, что вы не бот.\n"
                     f"Попробуйте:\n"
-                    f"1️⃣ Подождать 5-10 минут\n"
-                    f"2️⃣ Использовать VPN/Proxy\n"
-                    f"3️⃣ Обновить cookies\n\n"
+                    f"1️⃣ Обновить cookies (экспортируйте из браузера в режиме инкогнито)\n"
+                    f"2️⃣ Подождать 10-15 минут\n"
+                    f"3️⃣ Использовать VPN/Proxy\n\n"
+                    f"Ошибка: {error_msg[:150]}"
+                )
+            elif "Requested format is not available" in error_msg:
+                await event.edit(
+                    f"❌ **Формат недоступен**\n\n"
+                    f"Выбранное качество временно недоступно.\n"
+                    f"Попробуйте другое качество (360p или MP3).\n\n"
                     f"Ошибка: {error_msg[:150]}"
                 )
             else:
@@ -529,7 +540,7 @@ async def database_handler(event):
 @client.on(events.NewMessage(pattern='/cancel'))
 async def cancel_handler(event):
     user_id = event.sender_id
-    if user_id in user_downloads and user_downloads[user_id].is_set() == False:
+    if user_id in user_downloads and not user_downloads[user_id].is_set():
         user_downloads[user_id].set()
         await event.reply("🛑 **Загрузка отменена**")
     else:
