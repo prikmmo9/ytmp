@@ -1,9 +1,9 @@
-# downloader.py - ДОБАВЛЯЕМ ЗАДЕРЖКИ ПЕРЕД КАЖДЫМ ЗАПРОСОМ
+# downloader.py - ФИНАЛЬНАЯ ВЕРСИЯ для бота (работает как тест)
 import os
 import re
 import time
-import threading
 import random
+import threading
 from typing import Optional, Tuple
 
 import yt_dlp
@@ -112,7 +112,7 @@ def get_video_info(url: str) -> Optional[dict]:
     """Получает информацию о YouTube видео БЕЗ скачивания."""
     logger.info(f"🔍 Получаю информацию: YouTube")
     
-    # Задержка перед запросом (имитация человека)
+    # Задержка как в тесте
     time.sleep(random.uniform(1, 2))
     
     ydl_opts = {
@@ -163,8 +163,7 @@ def download_video(url: str, quality: str,
                    progress_callback=None, 
                    cancel_event: threading.Event = None) -> Optional[dict]:
     """
-    Скачивает YouTube видео.
-    Для MP3: скачивает видео 360p и извлекает аудио
+    Скачивает YouTube видео - ТОЧНО КАК В ТЕСТЕ
     """
     if cancel_event and cancel_event.is_set():
         logger.info("🛑 Загрузка отменена")
@@ -182,12 +181,12 @@ def download_video(url: str, quality: str,
     start_time = time.time()
     cookies_exists = os.path.exists(COOKIES_FILE)
     
-    # ⚠️ КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: задержка перед скачиванием (имитация человека)
-    delay = random.uniform(2, 4)
+    # ⚠️ КЛЮЧЕВОЕ: задержка как в тесте (1-2 секунды)
+    delay = random.uniform(1, 2)
     logger.info(f"⏳ Пауза {delay:.1f} сек перед скачиванием...")
     time.sleep(delay)
     
-    # Базовые настройки для скачивания
+    # ТОЧНО ТАКИЕ ЖЕ НАСТРОЙКИ КАК В ТЕСТЕ
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
@@ -198,7 +197,6 @@ def download_video(url: str, quality: str,
         'cookiefile': COOKIES_FILE if cookies_exists else None,
     }
     
-    # Для MP3 добавляем постпроцессор извлечения аудио
     if is_audio:
         ydl_opts['postprocessors'] = [{
             'key': 'FFmpegExtractAudio',
@@ -245,14 +243,12 @@ def download_video(url: str, quality: str,
             
             total_time = time.time() - start_time
             
-            # Определяем путь к файлу
             if is_audio:
                 base_path = ydl.prepare_filename(info)
                 file_path = os.path.splitext(base_path)[0] + '.mp3'
             else:
                 file_path = ydl.prepare_filename(info)
             
-            # Если файл не найден, ищем альтернативы
             if not os.path.exists(file_path):
                 base = os.path.splitext(file_path)[0]
                 search_exts = ['.mp3'] if is_audio else ['.mp4', '.webm', '.mkv']
@@ -300,9 +296,8 @@ def download_video(url: str, quality: str,
                 'format_id': info.get('format_id', format_id),
             }
             
-            # Проверка минимальной длительности (только для видео)
             if not is_audio and duration < MIN_DURATION_SECONDS:
-                logger.info(f"⏱ Видео слишком короткое ({duration}с < {MIN_DURATION_SECONDS}с). Пропускаем.")
+                logger.info(f"⏱ Видео слишком короткое ({duration}с). Пропускаем.")
                 try:
                     if os.path.exists(file_path):
                         os.remove(file_path)
@@ -331,7 +326,6 @@ def download_video(url: str, quality: str,
                     'too_short': True,
                 }
             
-            # Скачиваем превью (только для видео)
             thumb_path = None
             if not is_audio:
                 thumb_path = download_thumbnail_youtube(info.get('id', ''))
