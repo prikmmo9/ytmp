@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """
 Тестовый скрипт для проверки работы yt-dlp с YouTube
-Запуск: python test_ytdlp.py
+Запуск: 
+    python test_ytdlp.py                        # тестовое видео по умолчанию
+    python test_ytdlp.py "https://youtube.com/..." # своя ссылка
+    python test_ytdlp.py VIDEO_ID               # только ID видео
 """
 
 import os
 import sys
 import json
+import time
+import random
 from datetime import datetime
 
 def print_separator(title=""):
@@ -16,6 +21,17 @@ def print_separator(title=""):
         print("=" * 70)
     else:
         print("=" * 70)
+
+def get_video_url(user_input=None):
+    """Получает URL видео из аргументов командной строки"""
+    if user_input:
+        # Если передан ID (11 символов), преобразуем в URL
+        if len(user_input) == 11 and user_input.isalnum() or '_' in user_input or '-' in user_input:
+            return f"https://www.youtube.com/watch?v={user_input}"
+        # Если уже ссылка
+        return user_input
+    # Видео по умолчанию
+    return "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 
 def test_ytdlp_version():
     """Проверяет версию yt-dlp"""
@@ -41,7 +57,6 @@ def test_cookies_file():
         size = os.path.getsize(cookies_path)
         print(f"✅ Файл cookies.txt найден (размер: {size} байт)")
         
-        # Проверяем содержимое
         with open(cookies_path, 'r') as f:
             content = f.read()
             if '.youtube.com' in content:
@@ -69,16 +84,6 @@ def test_video_info(video_url, use_cookies=True):
         'no_warnings': True,
         'socket_timeout': 30,
         'skip_download': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['ios', 'android'],
-                'player_skip': ['webpage', 'configs'],
-            }
-        },
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
-            'Accept-Language': 'en-US,en;q=0.9',
-        }
     }
     
     if use_cookies and os.path.exists(cookies_path):
@@ -86,12 +91,15 @@ def test_video_info(video_url, use_cookies=True):
         print("🍪 Cookies загружены")
     
     try:
+        start_time = time.time()
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             print("⏳ Получение информации...")
             info = ydl.extract_info(video_url, download=False)
             
+            elapsed = time.time() - start_time
+            
             if info:
-                print("\n📊 ИНФОРМАЦИЯ О ВИДЕО:")
+                print(f"\n📊 ИНФОРМАЦИЯ О ВИДЕО (за {elapsed:.1f}с):")
                 print(f"   Название: {info.get('title', 'N/A')[:80]}")
                 print(f"   Канал: {info.get('uploader', 'N/A')}")
                 print(f"   Длительность: {info.get('duration', 0)} сек")
@@ -99,7 +107,6 @@ def test_video_info(video_url, use_cookies=True):
                 print(f"   Лайки: {info.get('like_count', 0):,}")
                 print(f"   Видео ID: {info.get('id', 'N/A')}")
                 
-                # Доступные форматы
                 formats = info.get('formats', [])
                 available_qualities = set()
                 for f in formats:
@@ -120,20 +127,16 @@ def test_video_info(video_url, use_cookies=True):
         error_msg = str(e)
         print(f"❌ ОШИБКА: {error_msg[:200]}")
         
-        if "Failed to extract any player response" in error_msg:
+        if "Sign in to confirm" in error_msg:
+            print("\n🔧 РЕКОМЕНДАЦИИ:")
+            print("   1. Обновите cookies (экспортируйте заново из браузера в режиме инкогнито)")
+            print("   2. Подождите 10-15 минут (YouTube блокирует частые запросы)")
+            print("   3. Используйте VPN/Proxy")
+        elif "Failed to extract any player response" in error_msg:
             print("\n🔧 РЕКОМЕНДАЦИИ:")
             print("   1. Обновите yt-dlp: pip install --upgrade yt-dlp")
-            print("   2. Проверьте cookies (экспортируйте заново)")
-            print("   3. Подождите 10-15 минут (YouTube может блокировать)")
-            print("   4. Используйте VPN/Proxy")
-        elif "HTTP Error 403" in error_msg:
-            print("\n🔧 РЕКОМЕНДАЦИИ:")
-            print("   1. Обновите cookies (экспортируйте заново из браузера)")
-            print("   2. Проверьте, что вы вошли в YouTube в браузере")
-        elif "timed out" in error_msg:
-            print("\n🔧 РЕКОМЕНДАЦИИ:")
-            print("   1. Проверьте интернет-соединение")
-            print("   2. Отключите VPN (если используется)")
+            print("   2. Проверьте cookies")
+            print("   3. Подождите 10-15 минут")
         
         return None
 
@@ -150,36 +153,22 @@ def test_video_download(video_url, quality='360', use_cookies=True):
     cookies_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
     
     quality_formats = {
-        '360': 'bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]/18',
-        '480': 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]/18',
-        '720': 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]/136+140/18',
-        'mp3': 'bestaudio[ext=m4a]/140',
+        '360': '18',
+        '480': '18',
+        '720': '22',
+        'mp3': '18',
     }
     
-    format_str = quality_formats.get(quality, quality_formats['360'])
+    format_id = quality_formats.get(quality, '18')
     is_audio = (quality == 'mp3')
     
     ydl_opts = {
-        'quiet': False,
-        'no_warnings': False,
+        'quiet': True,
+        'no_warnings': True,
         'socket_timeout': 30,
         'retries': 10,
-        'fragment_retries': 10,
-        'skip_unavailable_fragments': True,
         'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).50s_%(id)s.%(ext)s',
-        'format': format_str,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['ios', 'android'],
-                'player_skip': ['webpage', 'configs'],
-            }
-        },
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
-            'Accept-Language': 'en-US,en;q=0.9',
-        },
-        'external_downloader': None,
-        'concurrent_fragment_downloads': 1,
+        'format': format_id,
     }
     
     if use_cookies and os.path.exists(cookies_path):
@@ -192,38 +181,44 @@ def test_video_download(video_url, quality='360', use_cookies=True):
             'preferredcodec': 'mp3',
             'preferredquality': '192',
         }]
-        ydl_opts['merge_output_format'] = None
-    else:
-        ydl_opts['merge_output_format'] = 'mp4'
+        ydl_opts['keepvideo'] = False
     
     try:
-        start_time = datetime.now()
+        start_time = time.time()
         print(f"⏳ Начало скачивания...")
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(video_url, download=True)
             
             if info:
-                elapsed = (datetime.now() - start_time).total_seconds()
+                elapsed = time.time() - start_time
                 
-                # Находим файл
-                file_path = ydl.prepare_filename(info)
                 if is_audio:
-                    file_path = os.path.splitext(file_path)[0] + '.mp3'
+                    base_path = ydl.prepare_filename(info)
+                    file_path = os.path.splitext(base_path)[0] + '.mp3'
+                else:
+                    file_path = ydl.prepare_filename(info)
+                
+                if not os.path.exists(file_path):
+                    base = os.path.splitext(file_path)[0]
+                    for ext in ['.mp3'] if is_audio else ['.mp4', '.webm', '.mkv']:
+                        alt_path = base + ext
+                        if os.path.exists(alt_path):
+                            file_path = alt_path
+                            break
                 
                 if os.path.exists(file_path):
                     file_size = os.path.getsize(file_path) / (1024 * 1024)
-                    print(f"\n✅ ВИДЕО СКАЧАНО УСПЕШНО!")
+                    print(f"\n✅ {'MP3' if is_audio else 'ВИДЕО'} СКАЧАНО УСПЕШНО!")
                     print(f"   Файл: {os.path.basename(file_path)}")
                     print(f"   Размер: {file_size:.2f} MB")
                     print(f"   Время: {elapsed:.1f} сек")
                     
-                    # Удаляем тестовый файл
                     os.remove(file_path)
                     print(f"   🗑 Тестовый файл удален")
                     return True
                 else:
-                    print(f"❌ Файл не найден: {file_path}")
+                    print(f"❌ Файл не найден")
                     return False
             else:
                 print("❌ Не удалось скачать видео")
@@ -241,10 +236,9 @@ def test_multiple_clients(video_url):
     import yt_dlp
     
     clients = [
-        ('ios', 'iOS клиент'),
         ('android', 'Android клиент'),
         ('web', 'Web клиент'),
-        ('ios,android', 'iOS + Android'),
+        ('android,web', 'Android + Web'),
     ]
     
     cookies_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
@@ -260,22 +254,15 @@ def test_multiple_clients(video_url):
             'socket_timeout': 30,
             'skip_download': True,
             'cookiefile': cookies_path if os.path.exists(cookies_path) else None,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': client.split(',') if ',' in client else [client],
-                    'player_skip': ['webpage', 'configs'],
-                }
-            },
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
-            }
         }
         
         try:
+            start_time = time.time()
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(video_url, download=False)
+                elapsed = time.time() - start_time
                 if info and info.get('title'):
-                    print(f"   ✅ УСПЕШНО - {info.get('title', '')[:50]}")
+                    print(f"   ✅ УСПЕШНО ({elapsed:.1f}с) - {info.get('title', '')[:50]}")
                     results.append((client_name, True))
                 else:
                     print(f"   ❌ НЕ УДАЛОСЬ")
@@ -296,11 +283,9 @@ def run_full_test(video_url=None):
     print_separator("ТЕСТИРОВАНИЕ YT-DLP")
     print(f"Время начала: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
-    # Тест 0: Видео по умолчанию
-    if not video_url:
-        video_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"  # Тестовое видео
-        print(f"\n📹 Используется тестовое видео: {video_url}")
-        print("   (можно указать другой URL при запуске: python test_ytdlp.py https://...)\n")
+    # Получаем URL видео
+    video_url = get_video_url(video_url)
+    print(f"\n📹 Тестируемое видео: {video_url}")
     
     # 1. Проверка версии
     if not test_ytdlp_version():
@@ -308,45 +293,43 @@ def run_full_test(video_url=None):
     
     # 2. Проверка cookies
     cookies_path = test_cookies_file()
+    use_cookies = cookies_path is not None
     
     # 3. Тест получения информации
-    use_cookies = cookies_path is not None
     info = test_video_info(video_url, use_cookies=use_cookies)
     
     if not info:
-        # Пробуем без cookies
         print("\n🔄 Пробуем без cookies...")
         info = test_video_info(video_url, use_cookies=False)
     
     if not info:
         print("\n❌ НЕ УДАЛОСЬ ПОЛУЧИТЬ ИНФОРМАЦИЮ О ВИДЕО")
-        print("\n🔧 ПОЛНЫЕ РЕКОМЕНДАЦИИ:")
-        print("   1. Обновите yt-dlp: pip install --upgrade yt-dlp")
-        print("   2. Экспортируйте свежие cookies (войдите в YouTube в браузере)")
-        print("   3. Подождите 15-30 минут (возможна временная блокировка)")
-        print("   4. Используйте VPN/Proxy")
-        print("   5. Проверьте интернет-соединение")
         return False
     
-    # 4. Тест скачивания (только если информация получена)
+    # 4. Тест скачивания
     print("\n" + "-" * 70)
     response = input("Хотите проверить скачивание видео? (y/n): ").lower().strip()
     
+    download_success = None
     if response == 'y':
-        download_success = test_video_download(video_url, quality='360', use_cookies=use_cookies)
-        if not download_success:
-            print("\n⚠️ Скачивание не удалось, но это может быть из-за размера видео или блокировки")
-    else:
-        download_success = None
+        print("\nВыберите качество:")
+        print("  1 - 360p")
+        print("  2 - 720p")
+        print("  3 - MP3")
+        choice = input("Ваш выбор (1/2/3): ").strip()
+        
+        quality_map = {'1': '360', '2': '720', '3': 'mp3'}
+        quality = quality_map.get(choice, '360')
+        
+        download_success = test_video_download(video_url, quality=quality, use_cookies=use_cookies)
     
-    # 5. Тест разных клиентов
+    # 5. Тест клиентов
     print("\n" + "-" * 70)
     response = input("Хотите проверить разные клиенты YouTube? (y/n): ").lower().strip()
     
+    clients_success = None
     if response == 'y':
         clients_success = test_multiple_clients(video_url)
-    else:
-        clients_success = None
     
     # Итоги
     print_separator("ИТОГИ ТЕСТИРОВАНИЯ")
@@ -369,6 +352,7 @@ if __name__ == '__main__':
     video_url = None
     if len(sys.argv) > 1:
         video_url = sys.argv[1]
+        print(f"📹 Использую указанную ссылку: {video_url}")
     
     try:
         success = run_full_test(video_url)
