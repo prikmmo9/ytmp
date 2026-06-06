@@ -172,35 +172,26 @@ async def process_download(event, user_id, url, platform, video_id, quality):
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка пересылки: {e}")
     
-    # Этап 1: Получение информации (имитация)
-    stage1_messages = [
-        (3, "Подключаюсь к серверу..."),
-        (6, "Загружаю страницу видео..."),
-        (9, "Извлекаю метаданные..."),
-        (12, "Проверяю доступные форматы..."),
-        (15, "Анализирую видеопотоки..."),
-        (18, "Получаю информацию о разрешении..."),
-        (20, "Проверяю аудиодорожки..."),
-        (22, "Определяю оптимальный формат..."),
-        (24, "Расшифровываю сигнатуры..."),
-        (26, "Подготавливаю ссылки для скачивания..."),
-        (28, "Формирую запрос к CDN..."),
-        (29, "Информация получена! Перехожу к загрузке..."),
-    ]
-    
-    current_msg_index = 0
+    # Этап 1: Получение информации
     for step in range(1, 17):
         if user_id in user_downloads and user_downloads[user_id].is_set():
             await update_progress(1, "Отменено", (step / 16) * 30, "🛑 Загрузка отменена")
             return
         
         percent = 2 + (step / 16) * 28
-        while current_msg_index < len(stage1_messages) and percent >= stage1_messages[current_msg_index][0]:
-            current_msg_index += 1
+        if step == 1:
+            extra = "Подключаюсь к серверу..."
+        elif step == 5:
+            extra = "Извлекаю метаданные..."
+        elif step == 10:
+            extra = "Анализирую видеопотоки..."
+        elif step == 15:
+            extra = "Подготавливаю ссылки для скачивания..."
+        else:
+            extra = "Получение информации..."
         
-        current_msg = stage1_messages[current_msg_index - 1][1] if current_msg_index > 0 else "Инициализация загрузки..."
-        await update_progress(1, "Получение информации", percent, current_msg)
-        await asyncio.sleep(5.0)
+        await update_progress(1, "Получение информации", percent, extra)
+        await asyncio.sleep(1.5)
     
     await update_progress(1, "Информация получена", 30, "Запускаю скачивание...")
     await asyncio.sleep(0.5)
@@ -216,7 +207,7 @@ async def process_download(event, user_id, url, platform, video_id, quality):
             mapped_percent = 30 + (percent * 40 / 100)
             extra = ""
             if percent < 10:
-                extra = "Устанавливаю соединение с CDN..."
+                extra = "Устанавливаю соединение..."
             elif percent < 30:
                 extra = "Загружаю видеопоток..."
             elif percent < 60:
@@ -224,7 +215,7 @@ async def process_download(event, user_id, url, platform, video_id, quality):
             elif percent < 90:
                 extra = "Объединяю видео и аудио..."
             else:
-                extra = "Завершаю загрузку файла..."
+                extra = "Завершаю загрузку..."
             asyncio.create_task(update_progress(2, "Скачивание", mapped_percent, extra, speed, eta))
         
         if platform == 'tiktok':
@@ -391,8 +382,19 @@ async def process_download(event, user_id, url, platform, video_id, quality):
         
     except Exception as e:
         if not cancel_event.is_set():
-            logger.error(f"Ошибка: {str(e)[:200]}")
-            await event.edit(f"❌ **Ошибка:** {str(e)[:200]}")
+            error_msg = str(e)
+            if "Failed to extract any player response" in error_msg:
+                await event.edit(
+                    f"❌ **Ошибка YouTube API**\n\n"
+                    f"YouTube временно блокирует запросы.\n"
+                    f"Попробуйте:\n"
+                    f"1️⃣ Подождать 5-10 минут\n"
+                    f"2️⃣ Использовать VPN/Proxy\n"
+                    f"3️⃣ Обновить cookies\n\n"
+                    f"Ошибка: {error_msg[:150]}"
+                )
+            else:
+                await event.edit(f"❌ **Ошибка:** {error_msg[:200]}")
     finally:
         if user_id in user_downloads:
             del user_downloads[user_id]
