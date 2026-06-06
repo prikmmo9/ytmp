@@ -1,4 +1,4 @@
-# downloader.py - Исправленная версия с поддержкой cookies.txt
+# downloader.py - Модуль для скачивания видео с YouTube
 import os
 import re
 import time
@@ -10,6 +10,7 @@ import requests
 
 from logger_config import create_logger
 
+# Логгер для этого модуля
 logger = create_logger(
     name='Downloader',
     level=20,
@@ -28,20 +29,13 @@ MIN_DURATION_SECONDS = 78  # 1.3 минуты
 
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 
-# Проверяем наличие cookies
-cookies_exists = os.path.exists(COOKIES_FILE)
-if cookies_exists:
-    logger.info(f"🍪 Cookies загружены из {COOKIES_FILE}")
-else:
-    logger.warning("⚠️ Cookies не найдены! Возможны проблемы с загрузкой")
-
 # ============================================================
 # КАЧЕСТВО И ФОРМАТЫ YOUTUBE
 # ============================================================
 
 QUALITY_OPTIONS = {
     '360': {
-        'format': 'bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360][ext=mp4]/best[height<=360]/18',
+        'format': 'bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]/18',
         'label': '📺 360p',
         'quality_label': '360p',
         'resolution': (640, 360),
@@ -49,7 +43,7 @@ QUALITY_OPTIONS = {
         'audio_only': False,
     },
     '480': {
-        'format': 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best[height<=480]/18',
+        'format': 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]/18',
         'label': '📺 480p',
         'quality_label': '480p',
         'resolution': (854, 480),
@@ -57,7 +51,7 @@ QUALITY_OPTIONS = {
         'audio_only': False,
     },
     '720': {
-        'format': 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]/136+140/22',
+        'format': 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]/136+140/18',
         'label': '📺 720p HD',
         'quality_label': '720p HD',
         'resolution': (1280, 720),
@@ -65,7 +59,7 @@ QUALITY_OPTIONS = {
         'audio_only': False,
     },
     '1080': {
-        'format': 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best[height<=1080]/137+140/22',
+        'format': 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]/137+140/18',
         'label': '📺 1080p Full HD',
         'quality_label': '1080p Full HD',
         'resolution': (1920, 1080),
@@ -73,7 +67,7 @@ QUALITY_OPTIONS = {
         'audio_only': False,
     },
     'mp3': {
-        'format': 'bestaudio[ext=m4a]/bestaudio/best',
+        'format': 'bestaudio[ext=m4a]/140',
         'label': '🎵 MP3',
         'quality_label': 'MP3',
         'resolution': None,
@@ -105,7 +99,7 @@ def detect_youtube(url: str) -> Tuple[Optional[str], Optional[str], Optional[str
         r'(?:https?://)?(?:www\.)?youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})',
         r'(?:https?://)?(?:www\.)?youtu\.be/([a-zA-Z0-9_-]{11})',
         r'(?:https?://)?(?:www\.)?youtube\.com/shorts/([a-zA-Z0-9_-]{11})',
-        r'(?:https?://)?(?:www\.)?youtube\.com/live/([a-zA-Z0-9_-]{11})',
+        r'(?:https?://)?(?:www\.)?youtube\.com/live/([a-zA-Z0-9_-]{11})',  # Поддержка YouTube Live
     ]
     for pattern in youtube_patterns:
         match = re.match(pattern, url)
@@ -151,13 +145,14 @@ def get_video_info(url: str) -> Optional[dict]:
         'no_warnings': True,
         'socket_timeout': 30,
         'skip_download': True,
-        'cookiefile': COOKIES_FILE if cookies_exists else None,
-        'extractor_args': {'youtube': {'player_client': 'android,web', 'player_skip': ['web_safari']}},
+        'cookiefile': COOKIES_FILE if os.path.exists(COOKIES_FILE) else None,
+        'extractor_args': {'youtube': {'player_client': 'android', 'player_skip': ['web', 'web_safari']}},
+        'remote_components': ['ejs:github'],
+        'youtube_include_hls_manifest': False,
+        'youtube_include_dash_manifest': True,
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
         }
     }
     
@@ -201,7 +196,15 @@ def download_video(url: str, quality: str,
                    progress_callback=None, cancel_event: threading.Event = None) -> Optional[dict]:
     """
     Скачивает YouTube видео с выбранным качеством.
-    Использует cookies.txt для аутентификации.
+    
+    Args:
+        url: ссылка на видео
+        quality: '360', '480', '720', '1080', 'mp3'
+        progress_callback: функция для прогресса (percent, speed, eta)
+        cancel_event: threading.Event для отмены
+    
+    Returns:
+        dict с информацией о скачанном видео или None
     """
     if cancel_event and cancel_event.is_set():
         logger.info("🛑 Загрузка отменена")
@@ -217,28 +220,29 @@ def download_video(url: str, quality: str,
     is_audio = quality_config['audio_only']
     format_str = quality_config['format']
     
-    # Базовые опции с cookies.txt
+    cookies_exists = os.path.exists(COOKIES_FILE)
+    
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
         'socket_timeout': 30,
-        'retries': 10,
-        'fragment_retries': 10,
+        'retries': 5,
+        'fragment_retries': 5,
         'skip_unavailable_fragments': True,
         'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
         'format': format_str,
         'cookiefile': COOKIES_FILE if cookies_exists else None,
         'extractor_args': {'youtube': {'player_client': 'android,web', 'player_skip': []}},
+        'remote_components': ['ejs:github'],
+        'youtube_include_hls_manifest': False,
+        'youtube_include_dash_manifest': True,
         'format_sort': ['res:1080', 'ext:mp4:m4a'],
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
         }
     }
     
-    # Настройка ускорителя
     if ARIA2_AVAILABLE:
         ydl_opts.update({
             'external_downloader': 'aria2c',
@@ -256,7 +260,6 @@ def download_video(url: str, quality: str,
             'http_chunk_size': 20 * 1024 * 1024,
         })
     
-    # Настройка аудио/видео
     if is_audio:
         ydl_opts['postprocessors'] = [{
             'key': 'FFmpegExtractAudio',
@@ -438,5 +441,11 @@ if __name__ == '__main__':
     print(f"Platform: {platform}")
     print(f"Video ID: {video_id}")
     print(f"aria2: {ARIA2_AVAILABLE}")
-    print(f"Cookies file: {COOKIES_FILE} ({'exists' if cookies_exists else 'not found'})")
     print(f"Min duration: {MIN_DURATION_SECONDS}с")
+    
+    # Тестируем Live URL
+    live_url = "https://www.youtube.com/live/vOMD0i6ZoZA"
+    platform_l, clean_url_l, video_id_l = detect_youtube(live_url)
+    print(f"\nLive URL: {live_url}")
+    print(f"Platform: {platform_l}")
+    print(f"Video ID: {video_id_l}")
