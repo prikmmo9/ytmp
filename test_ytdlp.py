@@ -9,7 +9,6 @@
 
 import os
 import sys
-import json
 import time
 import random
 from datetime import datetime
@@ -26,7 +25,7 @@ def get_video_url(user_input=None):
     """Получает URL видео из аргументов командной строки"""
     if user_input:
         # Если передан ID (11 символов), преобразуем в URL
-        if len(user_input) == 11 and user_input.isalnum() or '_' in user_input or '-' in user_input:
+        if len(user_input) == 11 and (user_input.isalnum() or '_' in user_input or '-' in user_input):
             return f"https://www.youtube.com/watch?v={user_input}"
         # Если уже ссылка
         return user_input
@@ -102,16 +101,30 @@ def test_video_info(video_url, use_cookies=True):
                 print(f"\n📊 ИНФОРМАЦИЯ О ВИДЕО (за {elapsed:.1f}с):")
                 print(f"   Название: {info.get('title', 'N/A')[:80]}")
                 print(f"   Канал: {info.get('uploader', 'N/A')}")
-                print(f"   Длительность: {info.get('duration', 0)} сек")
-                print(f"   Просмотры: {info.get('view_count', 0):,}")
-                print(f"   Лайки: {info.get('like_count', 0):,}")
+                
+                duration = info.get('duration', 0)
+                if duration:
+                    minutes, seconds = divmod(int(duration), 60)
+                    print(f"   Длительность: {minutes}:{seconds:02d} ({duration} сек)")
+                else:
+                    print(f"   Длительность: Неизвестно")
+                
+                view_count = info.get('view_count', 0)
+                if view_count:
+                    print(f"   Просмотры: {view_count:,}")
+                
+                like_count = info.get('like_count', 0)
+                if like_count:
+                    print(f"   Лайки: {like_count:,}")
+                
                 print(f"   Видео ID: {info.get('id', 'N/A')}")
                 
+                # Безопасно получаем доступные качества
                 formats = info.get('formats', [])
                 available_qualities = set()
                 for f in formats:
-                    height = f.get('height', 0)
-                    if height > 0:
+                    height = f.get('height')
+                    if height and isinstance(height, int) and height > 0:
                         available_qualities.add(f"{height}p")
                 
                 if available_qualities:
@@ -161,6 +174,11 @@ def test_video_download(video_url, quality='360', use_cookies=True):
     
     format_id = quality_formats.get(quality, '18')
     is_audio = (quality == 'mp3')
+    
+    # Добавляем задержку перед скачиванием
+    delay = random.uniform(1, 2)
+    print(f"⏳ Пауза {delay:.1f} сек перед скачиванием...")
+    time.sleep(delay)
     
     ydl_opts = {
         'quiet': True,
@@ -214,6 +232,7 @@ def test_video_download(video_url, quality='360', use_cookies=True):
                     print(f"   Размер: {file_size:.2f} MB")
                     print(f"   Время: {elapsed:.1f} сек")
                     
+                    # Удаляем тестовый файл
                     os.remove(file_path)
                     print(f"   🗑 Тестовый файл удален")
                     return True
@@ -227,56 +246,13 @@ def test_video_download(video_url, quality='360', use_cookies=True):
     except Exception as e:
         error_msg = str(e)
         print(f"❌ ОШИБКА: {error_msg[:200]}")
+        
+        if "Sign in to confirm" in error_msg:
+            print("\n🔧 Нужно обновить cookies!")
+        elif "403" in error_msg:
+            print("\n🔧 YouTube блокирует запросы. Попробуйте позже или смените IP.")
+        
         return False
-
-def test_multiple_clients(video_url):
-    """Тестирует разные клиенты YouTube"""
-    print_separator("ТЕСТ 3: РАЗНЫЕ КЛИЕНТЫ YOUTUBE")
-    
-    import yt_dlp
-    
-    clients = [
-        ('android', 'Android клиент'),
-        ('web', 'Web клиент'),
-        ('android,web', 'Android + Web'),
-    ]
-    
-    cookies_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
-    
-    results = []
-    
-    for client, client_name in clients:
-        print(f"\n🔄 Тестируем {client_name}...")
-        
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'socket_timeout': 30,
-            'skip_download': True,
-            'cookiefile': cookies_path if os.path.exists(cookies_path) else None,
-        }
-        
-        try:
-            start_time = time.time()
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(video_url, download=False)
-                elapsed = time.time() - start_time
-                if info and info.get('title'):
-                    print(f"   ✅ УСПЕШНО ({elapsed:.1f}с) - {info.get('title', '')[:50]}")
-                    results.append((client_name, True))
-                else:
-                    print(f"   ❌ НЕ УДАЛОСЬ")
-                    results.append((client_name, False))
-        except Exception as e:
-            print(f"   ❌ ОШИБКА: {str(e)[:80]}")
-            results.append((client_name, False))
-    
-    print("\n📊 ИТОГИ ТЕСТИРОВАНИЯ КЛИЕНТОВ:")
-    for client_name, success in results:
-        status = "✅" if success else "❌"
-        print(f"   {status} {client_name}")
-    
-    return any(success for _, success in results)
 
 def run_full_test(video_url=None):
     """Запускает полное тестирование"""
@@ -299,11 +275,11 @@ def run_full_test(video_url=None):
     info = test_video_info(video_url, use_cookies=use_cookies)
     
     if not info:
-        print("\n🔄 Пробуем без cookies...")
-        info = test_video_info(video_url, use_cookies=False)
-    
-    if not info:
         print("\n❌ НЕ УДАЛОСЬ ПОЛУЧИТЬ ИНФОРМАЦИЮ О ВИДЕО")
+        print("\n💡 Возможные решения:")
+        print("   1. Обновите yt-dlp: pip install --upgrade yt-dlp")
+        print("   2. Экспортируйте свежие cookies из браузера в режиме инкогнито")
+        print("   3. Попробуйте другое видео")
         return False
     
     # 4. Тест скачивания
@@ -323,14 +299,6 @@ def run_full_test(video_url=None):
         
         download_success = test_video_download(video_url, quality=quality, use_cookies=use_cookies)
     
-    # 5. Тест клиентов
-    print("\n" + "-" * 70)
-    response = input("Хотите проверить разные клиенты YouTube? (y/n): ").lower().strip()
-    
-    clients_success = None
-    if response == 'y':
-        clients_success = test_multiple_clients(video_url)
-    
     # Итоги
     print_separator("ИТОГИ ТЕСТИРОВАНИЯ")
     print(f"✅ yt-dlp версия: OK")
@@ -339,9 +307,6 @@ def run_full_test(video_url=None):
     
     if download_success is not None:
         print(f"{'✅' if download_success else '⚠️'} Скачивание: {'успешно' if download_success else 'не удалось'}")
-    
-    if clients_success is not None:
-        print(f"{'✅' if clients_success else '⚠️'} Клиенты: {'хотя бы один работает' if clients_success else 'ни один не работает'}")
     
     print(f"\n🏁 Тестирование завершено: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
