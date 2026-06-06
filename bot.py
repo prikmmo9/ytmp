@@ -1,4 +1,4 @@
-# bot.py - Основной файл бота с определением доступных качеств
+# bot.py - Упрощённая версия без проверки форматов
 import os
 import asyncio
 import logging
@@ -49,14 +49,6 @@ client = TelegramClient('bot_session', API_ID, API_HASH)
 user_selections = {}
 user_downloads = {}
 storage_chat_id = None
-
-# Соответствие format_id и качества
-FORMAT_QUALITY_MAP = {
-    '18': {'quality': '360', 'label': '360p', 'height': 360},
-    '22': {'quality': '720', 'label': '720p HD', 'height': 720},
-    '37': {'quality': '1080', 'label': '1080p Full HD', 'height': 1080},
-    '140': {'quality': 'mp3', 'label': 'MP3', 'height': 0},
-}
 
 
 def format_caption(video_info: dict, platform: str, from_cache: bool = False) -> str:
@@ -111,68 +103,11 @@ async def notify_subscribers(channel_id: str, video_title: str, video_url: str):
             pass
 
 
-async def get_available_formats(video_url: str) -> list:
-    """
-    Получает список доступных форматов для видео.
-    Возвращает список словарей с информацией о форматах.
-    """
-    import yt_dlp
-    
-    cookies_exists = os.path.exists(COOKIES_FILE)
-    
-    ydl_opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'socket_timeout': 30,
-        'skip_download': True,
-        'cookiefile': COOKIES_FILE if cookies_exists else None,
-    }
-    
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=False)
-            
-            if not info:
-                return []
-            
-            available_formats = []
-            seen_qualities = set()
-            
-            for f in info.get('formats', []):
-                format_id = str(f.get('format_id', ''))
-                height = f.get('height', 0)
-                
-                # Проверяем интересующие нас форматы
-                if format_id in FORMAT_QUALITY_MAP:
-                    quality_info = FORMAT_QUALITY_MAP[format_id]
-                    if quality_info['quality'] not in seen_qualities:
-                        seen_qualities.add(quality_info['quality'])
-                        available_formats.append({
-                            'quality': quality_info['quality'],
-                            'label': quality_info['label'],
-                            'format_id': format_id,
-                            'height': height,
-                            'filesize': f.get('filesize', 0),
-                        })
-            
-            # Сортируем по качеству
-            quality_order = {'360': 0, '480': 1, '720': 2, '1080': 3, 'mp3': 4}
-            available_formats.sort(key=lambda x: quality_order.get(x['quality'], 99))
-            
-            logger.info(f"📊 Доступные форматы: {[f['label'] for f in available_formats]}")
-            return available_formats
-            
-    except Exception as e:
-        logger.error(f"Ошибка получения форматов: {str(e)[:200]}")
-        return []
-
-
 async def process_download(event, user_id, url, platform, video_id, quality, format_id='18'):
     if platform == 'tiktok':
         quality_config = TIKTOK_QUALITY_OPTIONS.get(quality, TIKTOK_QUALITY_OPTIONS['360'])
     else:
         quality_config = QUALITY_OPTIONS.get(quality, QUALITY_OPTIONS['360'])
-        # Передаём конкретный format_id
         quality_config['format'] = format_id
     
     logger.info(f"🌐 {platform.upper()} | 📊 {quality_config['description']} | ID: {video_id}")
@@ -493,7 +428,7 @@ async def start_handler(event):
     welcome = (
         f"🎬 **Привет, {user_name}!**\n\n"
         "Я - Media Download Bot! 🤖\n\n"
-        f"📺 **YouTube:** 360p | 480p | 720p | 1080p | MP3\n"
+        f"📺 **YouTube:** 360p | 720p | 1080p | MP3\n"
         f"🎵 **TikTok:** Видео со звуком | MP3\n"
         f"⏱ YouTube мин. длительность: 1.3 минуты\n"
         f"• Кэш: {stats['total_videos']} видео\n"
@@ -701,14 +636,6 @@ async def message_handler(event):
     
     logger.info(f"{platform_emoji} {platform_name}: {clean_url}")
     
-    # Отправляем сообщение о проверке доступных качеств
-    status_msg = await event.reply(f"{platform_emoji} **{platform_name}**\n\n🔍 Проверяю доступные качества...")
-    
-    # ПОЛУЧАЕМ ДОСТУПНЫЕ ФОРМАТЫ
-    available_formats = []
-    if platform == 'youtube':
-        available_formats = await get_available_formats(clean_url)
-    
     user_selections[user_id] = {
         'url': clean_url,
         'platform': platform,
@@ -719,7 +646,7 @@ async def message_handler(event):
     cached_qualities = get_available_qualities(video_id) if video_id and platform == 'youtube' else []
     cached_map = {q['quality']: True for q in cached_qualities}
     
-    # Формируем текст с доступными качествами
+    # Формируем текст
     quality_text = f"{platform_emoji} **{platform_name}**\n\n🔗 {clean_url}\n\n"
     
     if platform == 'tiktok':
@@ -736,45 +663,22 @@ async def message_handler(event):
             [Button.inline(mp3_label, data="quality:mp3:18")],
         ]
     else:
-        if available_formats:
-            quality_text += "🎯 **Доступные качества:**\n\n"
-            for f in available_formats:
-                quality_text += f"• {f['label']}\n"
-            quality_text += "\n"
-        else:
-            quality_text += "🎯 **Выберите качество:**\n\n"
+        quality_text += "🎯 **Выберите качество:**\n⏱ Мин. длительность: 1.3 мин.\n\n"
         
-        # Создаём кнопки только для доступных форматов
-        buttons = []
+        # Показываем все качества, при скачивании будет fallback на 360p
+        btn_360 = "✅ 📺 360p" if '360' in cached_map else "📺 360p"
+        btn_720 = "✅ 📺 720p HD" if '720' in cached_map else "📺 720p HD"
+        btn_1080 = "✅ 📺 1080p Full HD" if '1080' in cached_map else "📺 1080p Full HD"
+        btn_mp3 = "✅ 🎵 MP3 (аудио)" if 'mp3' in cached_map else "🎵 MP3 (аудио)"
         
-        # 360p
-        if any(f['quality'] == '360' for f in available_formats) or not available_formats:
-            btn_text = "✅ 📺 360p" if '360' in cached_map else "📺 360p"
-            buttons.append([Button.inline(btn_text, data="quality:360:18")])
-        
-        # 720p
-        if any(f['quality'] == '720' for f in available_formats):
-            btn_text = "✅ 📺 720p HD" if '720' in cached_map else "📺 720p HD"
-            buttons.append([Button.inline(btn_text, data="quality:720:22")])
-        
-        # 1080p
-        if any(f['quality'] == '1080' for f in available_formats):
-            btn_text = "✅ 📺 1080p Full HD" if '1080' in cached_map else "📺 1080p Full HD"
-            buttons.append([Button.inline(btn_text, data="quality:1080:22")])
-        
-        # MP3
-        if any(f['quality'] == 'mp3' for f in available_formats) or not available_formats:
-            btn_text = "✅ 🎵 MP3 (аудио)" if 'mp3' in cached_map else "🎵 MP3 (аудио)"
-            buttons.append([Button.inline(btn_text, data="quality:mp3:18")])
-        
-        # Если нет доступных форматов, показываем стандартные
-        if not buttons:
-            buttons = [
-                [Button.inline("📺 360p", data="quality:360:18")],
-                [Button.inline("🎵 MP3 (аудио)", data="quality:mp3:18")],
-            ]
+        buttons = [
+            [Button.inline(btn_360, data="quality:360:18")],
+            [Button.inline(btn_720, data="quality:720:22")],
+            [Button.inline(btn_1080, data="quality:1080:22")],
+            [Button.inline(btn_mp3, data="quality:mp3:18")],
+        ]
     
-    await status_msg.edit(quality_text, buttons=buttons)
+    await event.reply(quality_text, buttons=buttons)
 
 
 async def main():
@@ -814,7 +718,7 @@ async def main():
     print()
     print("=" * 60)
     print(f"  🤖 БОТ: @{me.username}")
-    print(f"  📺 YouTube: 360p | 480p | 720p | 1080p | MP3")
+    print(f"  📺 YouTube: 360p | 720p | 1080p | MP3")
     print(f"  🎵 TikTok: Видео со звуком | MP3")
     print(f"  🔴 Поддержка YouTube Live")
     print(f"  ✅ - качество в кэше")
