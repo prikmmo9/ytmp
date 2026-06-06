@@ -1,4 +1,4 @@
-# downloader.py - ФИНАЛЬНАЯ ВЕРСИЯ (работает в боте)
+# downloader.py - ВЕРСИЯ С ПОДДЕРЖКОЙ 720p
 import os
 import re
 import time
@@ -25,6 +25,10 @@ MIN_DURATION_SECONDS = 78
 
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 
+# ФОРМАТЫ ДЛЯ РАЗНЫХ КАЧЕСТВ
+# 18 = 360p mp4 (работает всегда)
+# 22 = 720p mp4 (работает для большинства видео)
+# 140 = m4a аудио
 QUALITY_OPTIONS = {
     '360': {
         'format': '18',
@@ -35,7 +39,7 @@ QUALITY_OPTIONS = {
         'audio_only': False,
     },
     '480': {
-        'format': '18',
+        'format': '18',  # 480p нет в простых форматах, используем 360p
         'label': '📺 480p',
         'quality_label': '480p',
         'resolution': (854, 480),
@@ -43,7 +47,7 @@ QUALITY_OPTIONS = {
         'audio_only': False,
     },
     '720': {
-        'format': '18',
+        'format': '22',  # 720p mp4
         'label': '📺 720p HD',
         'quality_label': '720p HD',
         'resolution': (1280, 720),
@@ -51,7 +55,7 @@ QUALITY_OPTIONS = {
         'audio_only': False,
     },
     '1080': {
-        'format': '18',
+        'format': '22',  # 1080p требует токен, используем 720p
         'label': '📺 1080p Full HD',
         'quality_label': '1080p Full HD',
         'resolution': (1920, 1080),
@@ -59,7 +63,7 @@ QUALITY_OPTIONS = {
         'audio_only': False,
     },
     'mp3': {
-        'format': '18',
+        'format': '18',  # Скачиваем 360p и извлекаем аудио
         'label': '🎵 MP3',
         'quality_label': 'MP3',
         'resolution': None,
@@ -163,7 +167,7 @@ async def download_video(url: str, quality: str,
                          cancel_event: threading.Event = None) -> Optional[dict]:
     """
     Асинхронная версия для вызова из бота.
-    Запускает синхронную загрузку в отдельном потоке.
+    Поддерживает 720p (формат 22) и 360p (формат 18).
     """
     if cancel_event and cancel_event.is_set():
         logger.info("🛑 Загрузка отменена")
@@ -172,7 +176,14 @@ async def download_video(url: str, quality: str,
     requested_quality_config = QUALITY_OPTIONS.get(quality, QUALITY_OPTIONS['360'])
     is_audio = requested_quality_config['audio_only']
     
-    logger.info(f"⬇️ Скачиваю YouTube: {requested_quality_config['description']}")
+    # Выбираем формат в зависимости от качества
+    if is_audio:
+        actual_format = '18'  # Для MP3 скачиваем 360p
+    else:
+        actual_format = requested_quality_config['format']  # 18 или 22
+    
+    quality_name = requested_quality_config['description']
+    logger.info(f"⬇️ Скачиваю YouTube: {quality_name} (формат {actual_format})")
     
     if cancel_event and cancel_event.is_set():
         return None
@@ -198,7 +209,7 @@ async def download_video(url: str, quality: str,
             'socket_timeout': 30,
             'retries': 10,
             'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
-            'format': '18',  # Всегда 360p
+            'format': actual_format,
             'cookiefile': COOKIES_FILE if cookies_exists else None,
         }
         
@@ -242,75 +253,109 @@ async def download_video(url: str, quality: str,
         
         ydl_opts['progress_hooks'] = [progress_hook]
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            
-            if not info:
-                return None
-            
-            total_time = time.time() - start_time
-            
-            if is_audio:
-                base_path = ydl.prepare_filename(info)
-                file_path = os.path.splitext(base_path)[0] + '.mp3'
-            else:
-                file_path = ydl.prepare_filename(info)
-            
-            if not os.path.exists(file_path):
-                base = os.path.splitext(file_path)[0]
-                search_exts = ['.mp3'] if is_audio else ['.mp4', '.webm', '.mkv']
-                for ext in search_exts:
-                    alt_path = base + ext
-                    if os.path.exists(alt_path):
-                        file_path = alt_path
-                        break
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                
+                if not info:
+                    return None
+                
+                total_time = time.time() - start_time
+                
+                if is_audio:
+                    base_path = ydl.prepare_filename(info)
+                    file_path = os.path.splitext(base_path)[0] + '.mp3'
                 else:
-                    video_id = info.get('id', '')
-                    import glob
-                    possible = glob.glob(f"{DOWNLOAD_FOLDER}/*{video_id}*")
-                    if possible:
-                        file_path = possible[0]
+                    file_path = ydl.prepare_filename(info)
+                
+                if not os.path.exists(file_path):
+                    base = os.path.splitext(file_path)[0]
+                    search_exts = ['.mp3'] if is_audio else ['.mp4', '.webm', '.mkv']
+                    for ext in search_exts:
+                        alt_path = base + ext
+                        if os.path.exists(alt_path):
+                            file_path = alt_path
+                            break
                     else:
-                        logger.error("Файл не найден!")
-                        return None
-            
-            file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-            duration = info.get('duration', 0)
-            if duration:
-                duration = int(duration)
-            
-            display_quality = requested_quality_config['description']
-            
-            full_info = {
-                'title': info.get('title', 'Видео'),
-                'fulltitle': info.get('fulltitle', info.get('title', 'Видео')),
-                'channel': info.get('channel', '') or info.get('uploader', 'Неизвестный'),
-                'channel_id': info.get('channel_id', '') or info.get('uploader_id', ''),
-                'channel_url': info.get('channel_url', '') or info.get('uploader_url', ''),
-                'uploader': info.get('uploader', 'Неизвестный'),
-                'duration': duration,
-                'view_count': info.get('view_count', 0),
-                'like_count': info.get('like_count', 0),
-                'comment_count': info.get('comment_count', 0),
-                'description': info.get('description', ''),
-                'thumbnail': info.get('thumbnail', ''),
-                'upload_date': info.get('upload_date', ''),
-                'age_limit': info.get('age_limit', 0),
-                'tags': info.get('tags', []),
-                'categories': info.get('categories', []),
-                'url': url,
-                'width': 0 if is_audio else 640,
-                'height': 0 if is_audio else 360,
-                'format_id': info.get('format_id', '18'),
-            }
-            
-            if not is_audio and duration < MIN_DURATION_SECONDS:
-                logger.info(f"⏱ Видео слишком короткое ({duration}с). Пропускаем.")
-                try:
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
-                except:
-                    pass
+                        video_id = info.get('id', '')
+                        import glob
+                        possible = glob.glob(f"{DOWNLOAD_FOLDER}/*{video_id}*")
+                        if possible:
+                            file_path = possible[0]
+                        else:
+                            logger.error("Файл не найден!")
+                            return None
+                
+                file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+                duration = info.get('duration', 0)
+                if duration:
+                    duration = int(duration)
+                
+                display_quality = requested_quality_config['description']
+                
+                # Определяем реальное разрешение видео
+                width, height = requested_quality_config['resolution'] if requested_quality_config['resolution'] else (640, 360)
+                if actual_format == '22':
+                    width, height = 1280, 720
+                
+                full_info = {
+                    'title': info.get('title', 'Видео'),
+                    'fulltitle': info.get('fulltitle', info.get('title', 'Видео')),
+                    'channel': info.get('channel', '') or info.get('uploader', 'Неизвестный'),
+                    'channel_id': info.get('channel_id', '') or info.get('uploader_id', ''),
+                    'channel_url': info.get('channel_url', '') or info.get('uploader_url', ''),
+                    'uploader': info.get('uploader', 'Неизвестный'),
+                    'duration': duration,
+                    'view_count': info.get('view_count', 0),
+                    'like_count': info.get('like_count', 0),
+                    'comment_count': info.get('comment_count', 0),
+                    'description': info.get('description', ''),
+                    'thumbnail': info.get('thumbnail', ''),
+                    'upload_date': info.get('upload_date', ''),
+                    'age_limit': info.get('age_limit', 0),
+                    'tags': info.get('tags', []),
+                    'categories': info.get('categories', []),
+                    'url': url,
+                    'width': 0 if is_audio else width,
+                    'height': 0 if is_audio else height,
+                    'format_id': info.get('format_id', actual_format),
+                }
+                
+                if not is_audio and duration < MIN_DURATION_SECONDS:
+                    logger.info(f"⏱ Видео слишком короткое ({duration}с). Пропускаем.")
+                    try:
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+                    except:
+                        pass
+                    
+                    return {
+                        'title': full_info['title'],
+                        'fulltitle': full_info['fulltitle'],
+                        'uploader': full_info['uploader'],
+                        'channel': full_info['channel'],
+                        'duration': duration,
+                        'file_path': None,
+                        'file_size_mb': 0,
+                        'url': url,
+                        'platform': 'youtube',
+                        'quality': display_quality,
+                        'quality_code': quality,
+                        'is_audio': is_audio,
+                        'width': 0,
+                        'height': 0,
+                        'thumb_path': None,
+                        'view_count': full_info['view_count'],
+                        'like_count': full_info['like_count'],
+                        'full_info': full_info,
+                        'too_short': True,
+                    }
+                
+                thumb_path = None
+                if not is_audio:
+                    thumb_path = download_thumbnail_youtube(info.get('id', ''))
+                
+                logger.info(f"✅ {'MP3' if is_audio else 'YouTube'} скачан: {os.path.basename(file_path)} | {file_size_mb:.1f} MB | {total_time:.1f}с")
                 
                 return {
                     'title': full_info['title'],
@@ -318,49 +363,32 @@ async def download_video(url: str, quality: str,
                     'uploader': full_info['uploader'],
                     'channel': full_info['channel'],
                     'duration': duration,
-                    'file_path': None,
-                    'file_size_mb': 0,
+                    'file_path': file_path,
+                    'file_size_mb': file_size_mb,
                     'url': url,
                     'platform': 'youtube',
                     'quality': display_quality,
                     'quality_code': quality,
                     'is_audio': is_audio,
-                    'width': 0,
-                    'height': 0,
-                    'thumb_path': None,
+                    'width': full_info['width'],
+                    'height': full_info['height'],
+                    'thumb_path': thumb_path,
                     'view_count': full_info['view_count'],
                     'like_count': full_info['like_count'],
                     'full_info': full_info,
-                    'too_short': True,
+                    'too_short': False,
                 }
-            
-            thumb_path = None
-            if not is_audio:
-                thumb_path = download_thumbnail_youtube(info.get('id', ''))
-            
-            logger.info(f"✅ {'MP3' if is_audio else 'YouTube'} скачан: {os.path.basename(file_path)} | {file_size_mb:.1f} MB | {total_time:.1f}с")
-            
-            return {
-                'title': full_info['title'],
-                'fulltitle': full_info['fulltitle'],
-                'uploader': full_info['uploader'],
-                'channel': full_info['channel'],
-                'duration': duration,
-                'file_path': file_path,
-                'file_size_mb': file_size_mb,
-                'url': url,
-                'platform': 'youtube',
-                'quality': display_quality,
-                'quality_code': quality,
-                'is_audio': is_audio,
-                'width': full_info['width'],
-                'height': full_info['height'],
-                'thumb_path': thumb_path,
-                'view_count': full_info['view_count'],
-                'like_count': full_info['like_count'],
-                'full_info': full_info,
-                'too_short': False,
-            }
+        except Exception as e:
+            error_msg = str(e)
+            # Если 720p не доступен, пробуем 360p
+            if actual_format == '22' and 'Requested format is not available' in error_msg:
+                logger.warning("⚠️ 720p не доступен, пробую 360p...")
+                # Рекурсивно пробуем 360p
+                return asyncio.run_coroutine_threadsafe(
+                    download_video(url, '360', progress_callback, cancel_event),
+                    loop
+                ).result()
+            raise
     
     # Запускаем синхронную загрузку в потоке
     loop = asyncio.get_running_loop()
@@ -371,6 +399,7 @@ async def download_video(url: str, quality: str,
             try:
                 percent, speed, eta = await asyncio.wait_for(progress_queue.get(), timeout=0.5)
                 if progress_callback:
+                    # Вызываем callback в executor, чтобы не блокировать event loop
                     await asyncio.get_running_loop().run_in_executor(
                         None, progress_callback, percent, speed, eta
                     )
@@ -379,14 +408,15 @@ async def download_video(url: str, quality: str,
                     break
                 continue
             except Exception as e:
+                logger.error(f"Ошибка обработки прогресса: {e}")
                 break
     
     # Запускаем обе задачи
     progress_task = asyncio.create_task(handle_progress())
-    download_task = loop.run_in_executor(None, sync_download)
     
     try:
-        result = await download_task
+        # Запускаем скачивание в потоке
+        result = await asyncio.get_running_loop().run_in_executor(None, sync_download)
         progress_task.cancel()
         return result
     except Exception as e:
@@ -399,8 +429,16 @@ async def download_video(url: str, quality: str,
 
 if __name__ == '__main__':
     async def test():
-        result = await download_video("https://www.youtube.com/watch?v=dQw4w9WgXcQ", 'mp3')
+        # Тест 360p
+        print("Тест 360p...")
+        result = await download_video("https://www.youtube.com/watch?v=dQw4w9WgXcQ", '360')
         if result:
-            print(f"✅ Тест пройден: {result['title'][:50]}")
+            print(f"✅ 360p: {result['title'][:50]} ({result['file_size_mb']:.1f} MB)")
+        
+        # Тест 720p
+        print("\nТест 720p...")
+        result = await download_video("https://www.youtube.com/watch?v=dQw4w9WgXcQ", '720')
+        if result:
+            print(f"✅ 720p: {result['title'][:50]} ({result['file_size_mb']:.1f} MB)")
     
     asyncio.run(test())
