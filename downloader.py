@@ -1,4 +1,4 @@
-# downloader.py - Модуль для скачивания видео с YouTube (исправленный)
+# downloader.py - Модуль для скачивания видео с YouTube (с Firefox cookies)
 import os
 import re
 import time
@@ -21,8 +21,11 @@ logger = create_logger(
 # КОНФИГУРАЦИЯ
 # ============================================================
 DOWNLOAD_FOLDER = 'downloads'
-COOKIES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
-COOKIES_FROM_BROWSER = 'chrome'  # или 'firefox', 'brave', 'edge'
+
+# Настройка cookies для Firefox
+COOKIES_FROM_BROWSER = 'firefox'  # Используем cookies из Firefox
+# Если Firefox установлен в нестандартном месте, укажите путь:
+# COOKIES_FROM_BROWSER = ('firefox', '/path/to/firefox/profile', None)
 
 # Минимальная длительность видео для YouTube
 MIN_DURATION_SECONDS = 78  # 1.3 минуты
@@ -30,7 +33,7 @@ MIN_DURATION_SECONDS = 78  # 1.3 минуты
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 
 # ============================================================
-# КАЧЕСТВО И ФОРМАТЫ YOUTUBE (исправленные)
+# КАЧЕСТВО И ФОРМАТЫ YOUTUBE
 # ============================================================
 
 QUALITY_OPTIONS = {
@@ -140,16 +143,12 @@ def get_video_info(url: str) -> Optional[dict]:
     """Получает информацию о YouTube видео БЕЗ скачивания."""
     logger.info(f"🔍 Получаю информацию: YouTube")
     
-    # Проверяем наличие cookies
-    cookies_exists = os.path.exists(COOKIES_FILE)
-    
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
         'socket_timeout': 30,
         'skip_download': True,
-        'cookiefile': COOKIES_FILE if cookies_exists else None,
-        'cookiesfrombrowser': (COOKIES_FROM_BROWSER, None, None) if not cookies_exists else None,
+        'cookiesfrombrowser': (COOKIES_FROM_BROWSER, None, None),  # Берем cookies из Firefox
         'extractor_args': {'youtube': {'player_client': 'android,web', 'player_skip': ['web_safari']}},
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -199,6 +198,7 @@ def download_video(url: str, quality: str,
                    progress_callback=None, cancel_event: threading.Event = None) -> Optional[dict]:
     """
     Скачивает YouTube видео с выбранным качеством.
+    Использует cookies из Firefox для обхода блокировок.
     """
     if cancel_event and cancel_event.is_set():
         logger.info("🛑 Загрузка отменена")
@@ -214,9 +214,7 @@ def download_video(url: str, quality: str,
     is_audio = quality_config['audio_only']
     format_str = quality_config['format']
     
-    cookies_exists = os.path.exists(COOKIES_FILE)
-    
-    # Базовые опции
+    # Базовые опции с cookies из Firefox
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
@@ -226,8 +224,7 @@ def download_video(url: str, quality: str,
         'skip_unavailable_fragments': True,
         'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
         'format': format_str,
-        'cookiefile': COOKIES_FILE if cookies_exists else None,
-        'cookiesfrombrowser': (COOKIES_FROM_BROWSER, None, None) if not cookies_exists else None,
+        'cookiesfrombrowser': (COOKIES_FROM_BROWSER, None, None),  # Cookies из Firefox
         'extractor_args': {'youtube': {'player_client': 'android,web', 'player_skip': []}},
         'format_sort': ['res:1080', 'ext:mp4:m4a'],
         'http_headers': {
@@ -438,4 +435,5 @@ if __name__ == '__main__':
     print(f"Platform: {platform}")
     print(f"Video ID: {video_id}")
     print(f"aria2: {ARIA2_AVAILABLE}")
+    print(f"Cookies from: {COOKIES_FROM_BROWSER}")
     print(f"Min duration: {MIN_DURATION_SECONDS}с")
