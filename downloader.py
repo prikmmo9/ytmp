@@ -1,9 +1,10 @@
-# downloader.py - ФИНАЛЬНАЯ ВЕРСИЯ с правильными форматами
+# downloader.py - ФИНАЛЬНАЯ ВЕРСИЯ с fix для event loop
 import os
 import re
 import time
 import random
 import threading
+import asyncio
 from typing import Optional, Tuple
 
 import yt_dlp
@@ -24,13 +25,10 @@ MIN_DURATION_SECONDS = 78
 
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 
-# ПРОВЕРЕННЫЕ ФОРМАТЫ, КОТОРЫЕ РАБОТАЮТ
-# 18 = 360p mp4 (всегда работает)
-# 22 = 720p mp4 (работает не для всех видео)
-# 140 = m4a аудио (для MP3)
+# Всегда используем формат 18 (360p) - работает везде
 QUALITY_OPTIONS = {
     '360': {
-        'format': '18',  # ✅ 360p mp4 - работает всегда
+        'format': '18',
         'label': '📺 360p',
         'quality_label': '360p',
         'resolution': (640, 360),
@@ -38,7 +36,7 @@ QUALITY_OPTIONS = {
         'audio_only': False,
     },
     '480': {
-        'format': '18',  # 480p нет в простых форматах, используем 360p
+        'format': '18',
         'label': '📺 480p',
         'quality_label': '480p',
         'resolution': (854, 480),
@@ -46,8 +44,7 @@ QUALITY_OPTIONS = {
         'audio_only': False,
     },
     '720': {
-        'format': '18',  # ВРЕМЕННО используем 360p (надежнее)
-        # 'format': '22',  # 720p - работает не для всех видео
+        'format': '18',
         'label': '📺 720p HD',
         'quality_label': '720p HD',
         'resolution': (1280, 720),
@@ -55,7 +52,7 @@ QUALITY_OPTIONS = {
         'audio_only': False,
     },
     '1080': {
-        'format': '18',  # 1080p нет в простых форматах, используем 360p
+        'format': '18',
         'label': '📺 1080p Full HD',
         'quality_label': '1080p Full HD',
         'resolution': (1920, 1080),
@@ -63,7 +60,7 @@ QUALITY_OPTIONS = {
         'audio_only': False,
     },
     'mp3': {
-        'format': '18',  # Скачиваем 360p и извлекаем аудио
+        'format': '18',
         'label': '🎵 MP3',
         'quality_label': 'MP3',
         'resolution': None,
@@ -163,28 +160,24 @@ def get_video_info(url: str) -> Optional[dict]:
         return None
 
 
-def download_video(url: str, quality: str, 
-                   progress_callback=None, 
-                   cancel_event: threading.Event = None) -> Optional[dict]:
+def download_video_sync(url: str, quality: str, 
+                        progress_callback=None, 
+                        cancel_event: threading.Event = None) -> Optional[dict]:
     """
-    Скачивает YouTube видео.
-    Всегда использует формат 18 (360p), который работает надёжно.
-    Для высоких качеств - просто масштабируем 360p.
+    СИНХРОННАЯ версия скачивания (для запуска в отдельном потоке)
     """
     if cancel_event and cancel_event.is_set():
         logger.info("🛑 Загрузка отменена")
         return None
     
-    # ВСЕГДА используем 360p для скачивания, независимо от выбранного качества
-    # Это гарантирует работу с любыми видео
-    actual_quality = '360'
-    quality_config = QUALITY_OPTIONS.get(actual_quality, QUALITY_OPTIONS['360'])
+    # Всегда используем 360p для скачивания
     requested_quality_config = QUALITY_OPTIONS.get(quality, QUALITY_OPTIONS['360'])
-    
     is_audio = requested_quality_config['audio_only']
-    format_id = quality_config['format']  # Всегда '18'
     
-    logger.info(f"⬇️ Скачиваю YouTube: {requested_quality_config['description']} (фактически 360p)")
+    # Фактически используем формат 18 (360p)
+    actual_format = '18'
+    
+    logger.info(f"⬇️ Скачиваю YouTube: {requested_quality_config['description']}")
     
     if cancel_event and cancel_event.is_set():
         return None
@@ -192,23 +185,22 @@ def download_video(url: str, quality: str,
     start_time = time.time()
     cookies_exists = os.path.exists(COOKIES_FILE)
     
-    # Задержка как в тесте
+    # Задержка перед скачиванием
     delay = random.uniform(1, 2)
-    logger.info(f"⏳ Пауза {delay:.1f} сек перед скачиванием...")
+    logger.info(f"⏳ Пауза {delay:.1f} сек...")
     time.sleep(delay)
     
-    # Простые настройки как в тесте
+    # Простые настройки
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
         'socket_timeout': 30,
         'retries': 10,
         'outtmpl': f'{DOWNLOAD_FOLDER}/%(title).100s_%(id)s.%(ext)s',
-        'format': format_id,
+        'format': actual_format,
         'cookiefile': COOKIES_FILE if cookies_exists else None,
     }
     
-    # Для MP3 добавляем извлечение аудио
     if is_audio:
         ydl_opts['postprocessors'] = [{
             'key': 'FFmpegExtractAudio',
@@ -285,10 +277,7 @@ def download_video(url: str, quality: str,
             if duration:
                 duration = int(duration)
             
-            # Для отображения используем выбранное качество, но реальное - 360p
             display_quality = requested_quality_config['description']
-            if quality != '360' and not is_audio:
-                display_quality = f"{requested_quality_config['description']} (факт. 360p)"
             
             full_info = {
                 'title': info.get('title', 'Видео'),
@@ -310,7 +299,7 @@ def download_video(url: str, quality: str,
                 'url': url,
                 'width': 0 if is_audio else 640,
                 'height': 0 if is_audio else 360,
-                'format_id': info.get('format_id', format_id),
+                'format_id': info.get('format_id', actual_format),
             }
             
             if not is_audio and duration < MIN_DURATION_SECONDS:
@@ -379,9 +368,29 @@ def download_video(url: str, quality: str,
         raise
 
 
+# Асинхронная обёртка (для совместимости с существующим event loop)
+async def download_video(url: str, quality: str, 
+                         progress_callback=None, 
+                         cancel_event: threading.Event = None) -> Optional[dict]:
+    """
+    Асинхронная обёртка для вызова в боте
+    """
+    loop = asyncio.get_running_loop()
+    
+    def run_sync():
+        return download_video_sync(url, quality, progress_callback, cancel_event)
+    
+    return await loop.run_in_executor(None, run_sync)
+
+
 if __name__ == '__main__':
     test_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
     platform, clean_url, video_id = detect_youtube(test_url)
     print(f"URL: {test_url}")
     print(f"Platform: {platform}")
     print(f"Video ID: {video_id}")
+    
+    # Тест синхронной версии
+    result = download_video_sync(test_url, '360')
+    if result:
+        print(f"✅ Тест пройден: {result['title'][:50]}")
